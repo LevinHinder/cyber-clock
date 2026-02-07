@@ -7,16 +7,11 @@
 #include <ScioSense_ENS160.h>
 #include "time.h"
 
-// ====== WiFi & Time config ======
-const char* ssid      = "Hinder WLAN";
-const char* password  = "t&5yblzK6*e#";
+const char* ssid = "Hinder WLAN";
+const char* password = "t&5yblzK6*e#";
 const char* ntpServer = "pool.ntp.org";
-
-// Zurich Timezone String: CET-1CEST,M3.5.0,M10.5.0/3
-// Meaning: Standard=UTC+1, Summer=UTC+2, Starts March last Sun, Ends Oct last Sun
 const char* time_zone = "CET-1CEST,M3.5.0,M10.5.0/3"; 
 
-// ====== Pins ======
 #define TFT_CS   9
 #define TFT_DC   8
 #define TFT_RST  7
@@ -34,172 +29,125 @@ const char* time_zone = "CET-1CEST,M3.5.0,M10.5.0/3";
 #define LED_PIN 4
 #define BUZZ_PIN 3
 
-// ====== TFT & Sensors ======
-Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
-GFXcanvas16 graphCanvas(320, 90);
-Adafruit_AHTX0   aht;
-ScioSense_ENS160 ens160(0x53);
-
-// ====== Screen Dimensions ======
 #define SCREEN_WIDTH  320
 #define SCREEN_HEIGHT 240
 #define SCREEN_CX     (SCREEN_WIDTH / 2)
 #define SCREEN_CY     (SCREEN_HEIGHT / 2)
 
-// ====== Colors ======
 #define CYBER_BG      ST77XX_BLACK
 #define CYBER_GREEN   0x07E0  
 #define CYBER_ACCENT  0x07FF  
 #define CYBER_LIGHT   0xFD20  
 #define CYBER_BLUE    0x07FF  
 #define CYBER_PINK    0xF81F
+#define CYBER_DARK    0x4208
+#define GRID_COLOR    0x2104 
 
 #define AQ_BAR_GREEN  0x07E0
 #define AQ_BAR_YELLOW 0xFFE0
 #define AQ_BAR_ORANGE 0xFD20
 #define AQ_BAR_RED    0xF800
-#define CYBER_DARK    0x4208
-#define GRID_COLOR    0x2104 
 
-// Graph & Text Colors
 #define COL_TEMP      ST77XX_RED
 #define COL_HUM       CYBER_BLUE
 #define COL_TVOC      CYBER_GREEN
 #define COL_CO2       ST77XX_YELLOW 
 
-#ifndef PI
-#define PI 3.1415926
-#endif
+Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+GFXcanvas16 graphCanvas(320, 90);
+Adafruit_AHTX0 aht;
+ScioSense_ENS160 ens160(0x53);
 
-// ====== Modes ======
-enum UIMode {
-  MODE_MENU = 0,
-  MODE_CLOCK,
-  MODE_POMODORO,
-  MODE_ALARM,
-  MODE_DVD
-};
-UIMode currentMode = MODE_CLOCK;       
+enum UIMode { MODE_MENU = 0, MODE_CLOCK, MODE_POMODORO, MODE_ALARM, MODE_DVD };
+UIMode currentMode = MODE_CLOCK;      
+
 int menuIndex = 0;
 const int MENU_ITEMS = 4;
+const char* menuLabels[MENU_ITEMS] = { "Monitor", "Pomodoro", "Alarm", "DVD" };
 
-const char* menuLabels[MENU_ITEMS] = {
-  "Monitor",
-  "Pomodoro",
-  "Alarm",
-  "DVD"
-};
-
-// ====== Pomodoro ======
-enum PomodoroState {
-  POMO_SET_WORK = 0,
-  POMO_SET_SHORT,
-  POMO_SET_LONG,
-  POMO_SET_CYCLES,
-  POMO_READY,
-  POMO_RUNNING,
-  POMO_PAUSED,
-  POMO_DONE
-};
-
-enum PomoPhase {
-  PHASE_WORK,
-  PHASE_SHORT,
-  PHASE_LONG
-};
+enum PomodoroState { POMO_SET_WORK = 0, POMO_SET_SHORT, POMO_SET_LONG, POMO_SET_CYCLES, POMO_READY, POMO_RUNNING, POMO_PAUSED, POMO_DONE };
+enum PomoPhase { PHASE_WORK, PHASE_SHORT, PHASE_LONG };
 
 PomodoroState pomoState = POMO_SET_WORK;
-PomoPhase     pomoPhase = PHASE_WORK;
+PomoPhase pomoPhase = PHASE_WORK;
 
-// Config Variables
-int cfgWorkMin  = 25;
+int cfgWorkMin = 25;
 int cfgShortMin = 5;
-int cfgLongMin  = 15;
-int cfgCycles   = 4;
+int cfgLongMin = 15;
+int cfgCycles = 4;
 
-// Runtime Variables
 int currentCycle = 1;
 unsigned long pomoStartMillis = 0;
 unsigned long pomoPausedMillis = 0;
 unsigned long currentDurationMs = 0;
-int prevPomoRemainSec  = -1;
-int prevPomoVal        = -1; 
-int prevBarWidth       = -1; 
+int prevPomoVal = -1; 
+int prevBarWidth = -1; 
 
-// ====== Env values ======
-float    curTemp = 0;
-float    curHum  = 0;
+float curTemp = 0;
+float curHum = 0;
 uint16_t curTVOC = 0;
 uint16_t curECO2 = 400;
 unsigned long lastEnvRead = 0;
 
-// ====== Graph History ======
 #define HISTORY_LEN 320 
 uint16_t histTemp[HISTORY_LEN];
 uint16_t histHum[HISTORY_LEN];
 uint16_t histTVOC[HISTORY_LEN];
 uint16_t histCO2[HISTORY_LEN];
-
 int historyHead = 0;
 unsigned long lastHistoryAdd = 0;
 const unsigned long HISTORY_INTERVAL = 1000; 
 
-// Forward declarations
+int prevSecond = -1;
+String prevTimeStr = "";
+
+int lastEncA = HIGH;
+int lastEncB = HIGH;
+bool lastEncBtn = HIGH;
+bool lastKey0 = HIGH;
+unsigned long lastBtnMs = 0;
+
+bool alarmEnabled = false;
+uint8_t alarmHour = 7;
+uint8_t alarmMinute = 0;
+bool alarmRinging = false;
+int alarmSelectedField = 0; 
+int lastAlarmDayTriggered = -1;
+
+enum AlertLevel { ALERT_NONE = 0, ALERT_CO2, ALERT_ALARM };
+AlertLevel currentAlertLevel = ALERT_NONE;
+unsigned long lastLedToggleMs = 0;
+bool ledState = false;
+unsigned long lastCo2BlinkMs = 0;
+bool co2BlinkOn = false;
+
+const int GRID_L = 10;
+const int GRID_R = 310;
+const int GRID_MID_X = (GRID_L + GRID_R) / 2;
+const int GRID_TOP = 75; 
+const int GRID_MID = 107;
+const int GRID_BOT = 139;
+const int TOP_LABEL_Y = GRID_TOP + 4;  
+const int TOP_VALUE_Y = GRID_TOP + 14; 
+const int BOTTOM_LABEL_Y = GRID_MID + 4;  
+const int BOTTOM_VALUE_Y = GRID_MID + 14; 
+
+bool dvdInited = false;
+int dvdX, dvdY, dvdVX = 2, dvdVY = 1;
+int dvdW = 80, dvdH = 30; 
+unsigned long lastDvdMs = 0;
+unsigned long dvdInterval = 35;
+uint16_t dvdColors[] = { ST77XX_WHITE, CYBER_ACCENT, CYBER_LIGHT, CYBER_GREEN, CYBER_PINK, ST77XX_YELLOW };
+int dvdColorIndex = 0;
+
 void drawHistoryGraph(); 
-void printCenteredText(const String &txt, int x0, int x1, int y, uint16_t color, uint16_t bg, uint8_t size);
-void drawMenuItem(int index, bool selected); 
 void drawMenu(bool fullRedraw);
 void initPomodoroWizard(const char* title);
 void updatePomodoroValue(int value);
 void drawPomodoroScreen(bool forceStatic);
+void drawAlarmScreen(bool full);
+void drawAlarmRingingScreen();
 
-// ====== Clock vars ======
-int    prevSecond  = -1;
-String prevTimeStr = "";
-
-// ====== Encoder & Buttons ======
-int  lastEncA   = HIGH;
-int  lastEncB   = HIGH;
-bool lastEncBtn = HIGH;
-bool lastKey0   = HIGH;
-unsigned long lastBtnMs = 0;
-
-// ====== Alarm ======
-bool     alarmEnabled = false;
-uint8_t  alarmHour    = 7;
-uint8_t  alarmMinute  = 0;
-bool     alarmRinging = false;
-int      alarmSelectedField = 0; 
-int      lastAlarmDayTriggered = -1;
-
-// ====== Alert / LED Blink ======
-enum AlertLevel {
-  ALERT_NONE = 0,
-  ALERT_CO2,
-  ALERT_ALARM
-};
-AlertLevel currentAlertLevel = ALERT_NONE;
-unsigned long lastLedToggleMs = 0;
-bool ledState = false;
-
-unsigned long lastCo2BlinkMs = 0;
-bool co2BlinkOn = false;
-
-// ========= Layout Constants =========
-const int GRID_L   = 10;
-const int GRID_R   = 310;
-const int GRID_MID_X = (GRID_L + GRID_R) / 2;
-
-const int GRID_TOP = 75; 
-const int GRID_MID = 107;
-const int GRID_BOT = 139;
-
-const int TOP_LABEL_Y    = GRID_TOP + 4;  
-const int TOP_VALUE_Y    = GRID_TOP + 14; 
-const int BOTTOM_LABEL_Y = GRID_MID + 4;  
-const int BOTTOM_VALUE_Y = GRID_MID + 14; 
-
-// ========= Helper: encoder & button =========
 int readEncoderStep() {
   int encA = digitalRead(ENC_A_PIN);
   int encB = digitalRead(ENC_B_PIN);
@@ -207,7 +155,7 @@ int readEncoderStep() {
   if (encA != lastEncA) {
     if (encA == LOW) {
       if (encB == HIGH) step = +1;
-      else              step = -1;
+      else step = -1;
     }
   }
   lastEncA = encA;
@@ -227,12 +175,10 @@ bool checkButtonPressed(uint8_t pin, bool &lastState) {
   return pressed;
 }
 
-// ========= UI Helpers =========
 void drawAlarmIcon() {
   int x = SCREEN_WIDTH - 24; 
   tft.fillRect(x - 10, 0, 24, 24, CYBER_BG);
   if (!alarmEnabled) return;
-
   uint16_t c = CYBER_LIGHT; 
   tft.drawRoundRect(x - 9, 4, 18, 14, 4, c);
   tft.drawFastHLine(x - 7, 16, 14, c);
@@ -250,14 +196,6 @@ void printCenteredText(const String &txt, int x0, int x1, int y, uint16_t color,
   tft.print(txt);
 }
 
-uint16_t colorForCO2(uint16_t eco2) {
-  if (eco2 <= 800)  return AQ_BAR_GREEN;
-  if (eco2 <= 1200) return AQ_BAR_YELLOW;
-  if (eco2 <= 1800) return AQ_BAR_ORANGE;
-  return AQ_BAR_RED;
-}
-
-// ========= WiFi & Time =========
 void connectWiFiAndSyncTime() {
   tft.fillScreen(CYBER_BG);
   tft.setTextColor(CYBER_LIGHT);
@@ -277,14 +215,10 @@ void connectWiFiAndSyncTime() {
     tft.fillScreen(CYBER_BG);
     tft.setCursor(20, 100);
     tft.print("Syncing time...");
-    
-    // Configure NTP with 0 offset. 
-    // We let the setenv/tzset handle the offsets.
     configTime(0, 0, ntpServer);
     setenv("TZ", time_zone, 1);
     tzset();
 
-    // Wait until we have a valid time (year > 2000)
     struct tm timeinfo;
     int retrySync = 0;
     while (!getLocalTime(&timeinfo) && retrySync < 10) {
@@ -312,23 +246,17 @@ String getTimeStr(char type) {
   return String(buf);
 }
 
-// ========= Env Sensors & History Logic =========
 void recordHistory(float t, float h, uint16_t tvoc, uint16_t eco2) {
   histTemp[historyHead] = (uint16_t)(t * 10); 
   histHum[historyHead]  = (uint16_t)h;
   histTVOC[historyHead] = tvoc;
   histCO2[historyHead]  = eco2;
-  
   historyHead = (historyHead + 1) % HISTORY_LEN;
-  
-  if (currentMode == MODE_CLOCK) {
-    drawHistoryGraph();
-  }
+  if (currentMode == MODE_CLOCK) drawHistoryGraph();
 }
 
 void updateEnvSensors(bool force = false) {
   unsigned long now = millis();
-  
   if (force || (now - lastEnvRead) >= 1000) { 
     lastEnvRead = now;
     sensors_event_t hum, temp;
@@ -343,20 +271,14 @@ void updateEnvSensors(bool force = false) {
     if (newTVOC != 0xFFFF) curTVOC = newTVOC;
     if (newCO2  != 0xFFFF) curECO2 = newCO2;
   }
-
   if (now - lastHistoryAdd >= HISTORY_INTERVAL) {
     lastHistoryAdd = now;
     recordHistory(curTemp, curHum, curTVOC, curECO2);
   }
 }
 
-// ========= Graph Drawing =========
 void drawHistoryGraph() {
-  // 1. Clear the canvas (in memory, invisible)
   graphCanvas.fillScreen(CYBER_BG);
-  
-  // 2. Draw grid lines on the canvas
-  // Note: Y coordinates are now relative to the canvas (0 to 90)
   int h = 90;
   graphCanvas.drawFastHLine(0, h/4,   320, GRID_COLOR);
   graphCanvas.drawFastHLine(0, h/2,   320, GRID_COLOR);
@@ -368,50 +290,31 @@ void drawHistoryGraph() {
   for (int i = 0; i < HISTORY_LEN; i++) {
     int idx = (historyHead + i) % HISTORY_LEN;
     
-    // Map values to Canvas Height (0 to 90)
-    // We map to 88 and 2 to keep a 2px padding top/bottom
     int valT = histTemp[idx] / 10; 
     int yT = map(constrain(valT, 0, 50), 0, 50, 88, 2);
-
     int valH = histHum[idx];
     int yH = map(constrain(valH, 0, 100), 0, 100, 88, 2);
-
     int valV = histTVOC[idx];
     int yV = map(constrain(valV, 0, 750), 0, 600, 88, 2);
-
     int valC = histCO2[idx];
     int yC = map(constrain(valC, 400, 1200), 400, 1200, 88, 2);
-
     int x = i;
 
     if (i > 0) {
-        // Draw lines on the canvas
         graphCanvas.drawLine(pX, pY_T, x, yT, COL_TEMP); 
         graphCanvas.drawLine(pX, pY_H, x, yH, COL_HUM);  
         graphCanvas.drawLine(pX, pY_V, x, yV, COL_TVOC); 
         graphCanvas.drawLine(pX, pY_C, x, yC, COL_CO2); 
     }
-
-    pX = x;
-    pY_T = yT;
-    pY_H = yH;
-    pY_V = yV;
-    pY_C = yC;
+    pX = x; pY_T = yT; pY_H = yH; pY_V = yV; pY_C = yC;
   }
-
-  // Draw the border on the canvas
   graphCanvas.drawRect(0, 0, 320, 90, GRID_COLOR);
-
-  // 3. Push the entire canvas to the screen at Y=145
-  // This is the only operation that touches the actual display
   tft.drawRGBBitmap(0, 145, graphCanvas.getBuffer(), 320, 90);
 }
 
-// ========= Clock UI =========
 void initClockStaticUI() {
   tft.fillScreen(CYBER_BG);
   drawAlarmIcon();
-  
   tft.drawFastHLine(GRID_L, GRID_TOP, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastHLine(GRID_L, GRID_MID, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastHLine(GRID_L, GRID_BOT, GRID_R - GRID_L, ST77XX_WHITE);
@@ -421,7 +324,6 @@ void initClockStaticUI() {
   printCenteredText("TEMP", GRID_MID_X, GRID_R,     TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TVOC", GRID_L,     GRID_MID_X, BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("CO2",  GRID_MID_X, GRID_R,     BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
-
   drawHistoryGraph();
 }
 
@@ -430,73 +332,40 @@ void drawClockTime(String hourStr, String minStr, String secStr) {
   if (cur == prevTimeStr) return;
   prevTimeStr = cur;
 
-  int16_t x1, y1;
-  uint16_t w, h;
+  int16_t x1, y1; uint16_t w, h;
   tft.setTextSize(6); 
-  
   tft.getTextBounds("88:88:88", 0, 0, &x1, &y1, &w, &h);
   int x = (SCREEN_WIDTH - w) / 2;
   int y = 10; 
-
   tft.setTextColor(ST77XX_WHITE, CYBER_BG);
   tft.setCursor(x, y);
   tft.print(cur);
 }
 
 void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
-  // Height of Text Size 2 is approx 14px. We clear 18px to be safe.
   int clearH = 18; 
-  // Calculate widths for the left and right columns
   int w_left  = (GRID_MID_X - GRID_L) - 2;
   int w_right = (GRID_R - GRID_MID_X) - 2;
 
-  // --- 1. Humidity (Top Left) ---
-  // Clear the box first to remove old text artifacts
   tft.fillRect(GRID_L + 1, TOP_VALUE_Y, w_left, clearH, CYBER_BG);
-  
-  char humBuf[8];
-  sprintf(humBuf, "%2.0f%%", hum);
-  printCenteredText(String(humBuf),
-                    GRID_L, GRID_MID_X,
-                    TOP_VALUE_Y,
-                    COL_HUM, CYBER_BG, 2);
+  char humBuf[8]; sprintf(humBuf, "%2.0f%%", hum);
+  printCenteredText(String(humBuf), GRID_L, GRID_MID_X, TOP_VALUE_Y, COL_HUM, CYBER_BG, 2);
 
-  // --- 2. Temperature (Top Right) ---
   tft.fillRect(GRID_MID_X + 1, TOP_VALUE_Y, w_right, clearH, CYBER_BG);
-  
-  char tempBuf[10];
-  sprintf(tempBuf, "%2.1fC", temp);
-  printCenteredText(String(tempBuf),
-                    GRID_MID_X, GRID_R,
-                    TOP_VALUE_Y,
-                    COL_TEMP, CYBER_BG, 2);
+  char tempBuf[10]; sprintf(tempBuf, "%2.1fC", temp);
+  printCenteredText(String(tempBuf), GRID_MID_X, GRID_R, TOP_VALUE_Y, COL_TEMP, CYBER_BG, 2);
 
-  // --- 3. TVOC (Bottom Left) ---
-  // This was the specific one causing issues
   tft.fillRect(GRID_L + 1, BOTTOM_VALUE_Y, w_left, clearH, CYBER_BG);
-  
-  char tvocBuf[16];
-  sprintf(tvocBuf, "%d", tvoc);
-  printCenteredText(String(tvocBuf),
-                    GRID_L, GRID_MID_X,
-                    BOTTOM_VALUE_Y,
-                    COL_TVOC, CYBER_BG, 2);
+  char tvocBuf[16]; sprintf(tvocBuf, "%d", tvoc);
+  printCenteredText(String(tvocBuf), GRID_L, GRID_MID_X, BOTTOM_VALUE_Y, COL_TVOC, CYBER_BG, 2);
 
-  // --- 4. CO2 (Bottom Right) ---
   tft.fillRect(GRID_MID_X + 1, BOTTOM_VALUE_Y, w_right, clearH, CYBER_BG);
-  
-  char co2Buf[12];
-  sprintf(co2Buf, "%d", eco2);
-  printCenteredText(String(co2Buf),
-                    GRID_MID_X, GRID_R,
-                    BOTTOM_VALUE_Y,
-                    COL_CO2, CYBER_BG, 2);
+  char co2Buf[12]; sprintf(co2Buf, "%d", eco2);
+  printCenteredText(String(co2Buf), GRID_MID_X, GRID_R, BOTTOM_VALUE_Y, COL_CO2, CYBER_BG, 2);
 }
 
-// ========= Menu UI =========
 void drawMenuItem(int index, bool selected) {
   if (index < 0 || index >= MENU_ITEMS) return;
-
   int rowCenterY = 60 + index * 40;
   int boxY = rowCenterY - 14;
   int boxH = 28;
@@ -530,48 +399,34 @@ void drawMenu(bool fullRedraw) {
   }
 }
 
-// ========= Pomodoro (Wizard & Running) =========
-
-// 1. Wizard - Static Layout (RUN ONCE)
 void initPomodoroWizard(const char* title) {
   tft.fillScreen(CYBER_BG);
-  
   tft.setTextSize(2);
   tft.setTextColor(CYBER_LIGHT, CYBER_BG);
   int16_t x1, y1; uint16_t w, h;
   tft.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
   tft.setCursor((SCREEN_WIDTH - w)/2, 40);
   tft.print(title);
-  
-  // No unit text anymore, just the number will be drawn
 }
 
-// 2. Wizard - Value Update (RUN ON KNOB)
 void updatePomodoroValue(int value) {
   if (value == prevPomoVal) return;
   prevPomoVal = value;
-
-  // Clear ONLY the number area with a small box
-  // This prevents ghosting (10 -> 9) and flickering
   int numY = 100;
   int numH = 50; 
   int numW = 100;
   int startX = (SCREEN_WIDTH - numW) / 2;
   
   tft.fillRect(startX, numY, numW, numH, CYBER_BG);
-
   tft.setTextSize(6);
   tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-  
   String valStr = String(value);
   int16_t x1, y1; uint16_t w, h;
   tft.getTextBounds(valStr, 0, 0, &x1, &y1, &w, &h);
-  
   tft.setCursor((SCREEN_WIDTH - w)/2, numY);
   tft.print(valStr);
 }
 
-// 3. Bar Drawer
 void drawPomodoroBar(float progress) {
   int barX = 20;
   int barY = 225; 
@@ -585,7 +440,6 @@ void drawPomodoroBar(float progress) {
   }
 
   int targetW = (int)(barW * progress);
-  
   if (targetW != prevBarWidth) {
     if (targetW > prevBarWidth) {
       tft.fillRect(barX + prevBarWidth, barY, targetW - prevBarWidth, barH, CYBER_GREEN);
@@ -596,14 +450,11 @@ void drawPomodoroBar(float progress) {
   }
 }
 
-// 4. Running Screen
 void drawPomodoroScreen(bool forceStatic) {
   if (forceStatic) {
     tft.fillScreen(CYBER_BG);
     drawAlarmIcon();
-    
     prevBarWidth = -1; 
-    
     tft.setTextSize(2);
     tft.setTextColor(CYBER_LIGHT, CYBER_BG);
     const char* phaseStr = "";
@@ -627,7 +478,6 @@ void drawPomodoroScreen(bool forceStatic) {
   unsigned long elapsed = 0;
   if (pomoState == POMO_RUNNING) elapsed = millis() - pomoStartMillis;
   else if (pomoState == POMO_PAUSED) elapsed = pomoPausedMillis - pomoStartMillis;
-  
   if (elapsed > currentDurationMs) elapsed = currentDurationMs;
 
   float progress = (currentDurationMs > 0) ? (float)elapsed / currentDurationMs : 0.0f;
@@ -636,7 +486,6 @@ void drawPomodoroScreen(bool forceStatic) {
   unsigned long remain = currentDurationMs - elapsed;
   uint16_t rmMin = remain / 60000UL;
   uint8_t  rmSec = (remain / 1000UL) % 60;
-
   char buf[8];
   sprintf(buf, "%02d:%02d", rmMin, rmSec);
 
@@ -648,23 +497,18 @@ void drawPomodoroScreen(bool forceStatic) {
   tft.print(buf);
 }
 
-// ========= Alarm UI =========
 void drawAlarmScreen(bool full) {
   if (full) {
     tft.fillScreen(CYBER_BG);
     drawAlarmIcon();
   }
-
-  char hBuf[3];
-  char mBuf[3];
+  char hBuf[3], mBuf[3];
   sprintf(hBuf, "%02d", alarmHour);
   sprintf(mBuf, "%02d", alarmMinute);
 
   tft.setTextSize(6);
-
   String disp = String(hBuf) + ":" + String(mBuf);
-  int16_t x1, y1;
-  uint16_t w, h;
+  int16_t x1, y1; uint16_t w, h;
   tft.getTextBounds(disp, 0, 0, &x1, &y1, &w, &h);
   int x = (SCREEN_WIDTH - w) / 2;
   int y = 60;
@@ -672,10 +516,8 @@ void drawAlarmScreen(bool full) {
   tft.setCursor(x, y);
   tft.setTextColor(alarmSelectedField == 0 ? CYBER_LIGHT : ST77XX_WHITE, CYBER_BG);
   tft.print(hBuf);
-
   tft.setTextColor(ST77XX_WHITE, CYBER_BG);
   tft.print(":");
-
   tft.setTextColor(alarmSelectedField == 1 ? CYBER_LIGHT : ST77XX_WHITE, CYBER_BG);
   tft.print(mBuf);
 
@@ -685,9 +527,7 @@ void drawAlarmScreen(bool full) {
   tft.setCursor(50, 165);
   tft.print("Status:");
   tft.setCursor(180, 165);
-  uint16_t enColor = alarmSelectedField == 2
-                     ? CYBER_LIGHT
-                     : (alarmEnabled ? CYBER_GREEN : ST77XX_RED);
+  uint16_t enColor = alarmSelectedField == 2 ? CYBER_LIGHT : (alarmEnabled ? CYBER_GREEN : ST77XX_RED);
   tft.setTextColor(enColor, CYBER_BG);
   tft.print(alarmEnabled ? "ON " : "OFF");
 }
@@ -700,16 +540,12 @@ void drawAlarmRingingScreen() {
   tft.print("ALARM!");
 }
 
-// ========= Alarm logic =========
 void checkAlarmTrigger() {
   if (!alarmEnabled || alarmRinging) return;
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return;
 
-  if (timeinfo.tm_hour == alarmHour &&
-      timeinfo.tm_min  == alarmMinute &&
-      timeinfo.tm_sec  == 0) {
-
+  if (timeinfo.tm_hour == alarmHour && timeinfo.tm_min == alarmMinute && timeinfo.tm_sec == 0) {
     alarmRinging = true;
     lastAlarmDayTriggered = timeinfo.tm_mday;
     currentMode = MODE_ALARM;
@@ -717,22 +553,19 @@ void checkAlarmTrigger() {
   }
 }
 
-// ========= Alert visual + audio =========
 void updateAlertStateAndLED() {
   if (alarmRinging) currentAlertLevel = ALERT_ALARM;
   else if (curECO2 > 1800) currentAlertLevel = ALERT_CO2;
   else currentAlertLevel = ALERT_NONE;
 
   unsigned long now = millis();
-
   if (currentAlertLevel == ALERT_NONE) {
     digitalWrite(LED_PIN, LOW);
     ledState = false; 
   } else {
     unsigned long interval;
-    if (currentAlertLevel == ALERT_ALARM)      interval = 120; 
-    else /* ALERT_CO2 */                       interval = 250; 
-
+    if (currentAlertLevel == ALERT_ALARM) interval = 120; 
+    else interval = 250; 
     if (now - lastLedToggleMs > interval) {
       lastLedToggleMs = now;
       ledState = !ledState;
@@ -749,33 +582,12 @@ void updateAlertStateAndLED() {
   }
 }
 
-// ========= DVD screensaver =========
-bool dvdInited = false;
-int  dvdX, dvdY;
-int  dvdVX = 2;
-int  dvdVY = 1;
-int  dvdW  = 80; 
-int  dvdH  = 30; 
-unsigned long lastDvdMs = 0;
-unsigned long dvdInterval = 35;
-
-uint16_t dvdColors[] = {
-  ST77XX_WHITE,
-  CYBER_ACCENT,
-  CYBER_LIGHT,
-  CYBER_GREEN,
-  CYBER_PINK,
-  ST77XX_YELLOW
-};
-int dvdColorIndex = 0;
-
 void drawDvdLogo(int x, int y, uint16_t c) {
   tft.fillRoundRect(x, y, dvdW, dvdH, 8, c);
   tft.drawRoundRect(x, y, dvdW, dvdH, 8, CYBER_BG);
   tft.setTextSize(2);
   tft.setTextColor(CYBER_BG, c);
-  int16_t bx, by;
-  uint16_t w, h;
+  int16_t bx, by; uint16_t w, h;
   tft.getTextBounds("DVD", 0, 0, &bx, &by, &w, &h);
   int tx = x + (dvdW - (int)w) / 2;
   int ty = y + (dvdH - (int)h) / 2 + 1;
@@ -787,91 +599,267 @@ void initDvd() {
   dvdInited = true;
   tft.fillScreen(CYBER_BG);
   drawAlarmIcon();
-  dvdX = 80;
-  dvdY = 80;
-  dvdVX = 3;
-  dvdVY = 2;
+  dvdX = 80; dvdY = 80; dvdVX = 3; dvdVY = 2;
   lastDvdMs = millis();
   dvdColorIndex = 0;
   drawDvdLogo(dvdX, dvdY, dvdColors[dvdColorIndex]);
 }
 
 void updateDvd(int encStep, bool encPressed, bool backPressed) {
-  (void)encPressed;
-
   if (backPressed) {
     dvdInited = false;
     currentMode = MODE_MENU;
     drawMenu(true);
     return;
   }
-
   if (encStep != 0) {
     int speed = abs(dvdVX) + encStep;
     if (speed < 1) speed = 1;
     if (speed > 8) speed = 8;
     dvdVX = (dvdVX >= 0 ? 1 : -1) * speed;
   }
-
   unsigned long now = millis();
   if (now - lastDvdMs < dvdInterval) return;
   lastDvdMs = now;
 
   tft.fillRoundRect(dvdX, dvdY, dvdW, dvdH, 8, CYBER_BG);
-
   dvdX += dvdVX;
   dvdY += dvdVY;
 
-  int left   = 0;
-  int right  = SCREEN_WIDTH - dvdW;
-  int top    = 0; 
-  int bottom = SCREEN_HEIGHT - dvdH;
+  int left = 0, right = SCREEN_WIDTH - dvdW;
+  int top = 0, bottom = SCREEN_HEIGHT - dvdH;
+  bool hitX = false, hitY = false;
 
-  bool hitX = false;
-  bool hitY = false;
-
-  if (dvdX <= left) {
-    dvdX = left;
-    dvdVX = -dvdVX;
-    hitX = true;
-  } else if (dvdX >= right) {
-    dvdX = right;
-    dvdVX = -dvdVX;
-    hitX = true;
-  }
-
-  if (dvdY <= top) {
-    dvdY = top;
-    dvdVY = -dvdVY;
-    hitY = true;
-  } else if (dvdY >= bottom) {
-    dvdY = bottom;
-    dvdVY = -dvdVY;
-    hitY = true;
-  }
+  if (dvdX <= left) { dvdX = left; dvdVX = -dvdVX; hitX = true; } 
+  else if (dvdX >= right) { dvdX = right; dvdVX = -dvdVX; hitX = true; }
+  if (dvdY <= top) { dvdY = top; dvdVY = -dvdVY; hitY = true; } 
+  else if (dvdY >= bottom) { dvdY = bottom; dvdVY = -dvdVY; hitY = true; }
 
   if (hitX && hitY) {
-    dvdColorIndex++;
-    if (dvdColorIndex >= (int)(sizeof(dvdColors) / sizeof(dvdColors[0]))) {
-      dvdColorIndex = 0;
-    }
+    dvdColorIndex = (dvdColorIndex + 1) % (sizeof(dvdColors) / sizeof(dvdColors[0]));
     tone(BUZZ_PIN, 1500, 80);
   }
-
   drawDvdLogo(dvdX, dvdY, dvdColors[dvdColorIndex]);
 }
 
-// ========= SETUP =========
+void runMenu(int encStep, bool encPressed, bool k0Pressed) {
+    if (encStep != 0) {
+        int prevMenuIndex = menuIndex;
+        menuIndex += encStep;
+        if (menuIndex < 0) menuIndex = MENU_ITEMS - 1;
+        if (menuIndex >= MENU_ITEMS) menuIndex = 0;
+        drawMenuItem(prevMenuIndex, false);
+        drawMenuItem(menuIndex, true);
+    }
+    if (encPressed) {
+        if (menuIndex == 0) {
+            currentMode = MODE_CLOCK;
+            initClockStaticUI();
+            prevTimeStr = "";
+            updateEnvSensors(true);
+            drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+            drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
+        } else if (menuIndex == 1) {
+            currentMode = MODE_POMODORO;
+            pomoState = POMO_SET_WORK;
+            prevPomoVal = -1;
+            initPomodoroWizard("Set Work");
+            updatePomodoroValue(cfgWorkMin);
+        } else if (menuIndex == 2) {
+            currentMode = MODE_ALARM;
+            alarmSelectedField = 0;
+            drawAlarmScreen(true);
+        } else if (menuIndex == 3) {
+            currentMode = MODE_DVD;
+            dvdInited = false;
+        }
+    }
+    if (k0Pressed) {
+        currentMode = MODE_CLOCK;
+        initClockStaticUI();
+        prevTimeStr = "";
+        drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+        drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
+    }
+}
+
+void runClock(bool k0Pressed) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        int sec = timeinfo.tm_sec;
+        if (sec != prevSecond) {
+            prevSecond = sec;
+            drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+            if (sec % 5 == 0) {
+                updateEnvSensors(true);
+                drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
+            } else {
+                updateEnvSensors(false);
+            }
+        }
+    }
+    if (k0Pressed) {
+        currentMode = MODE_MENU;
+        drawMenu(true);
+    }
+}
+
+void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
+    if (pomoState == POMO_SET_WORK) {
+        if (encStep != 0) {
+            cfgWorkMin = constrain(cfgWorkMin + encStep, 1, 90);
+            updatePomodoroValue(cfgWorkMin);
+        }
+        if (encPressed) {
+            pomoState = POMO_SET_SHORT;
+            prevPomoVal = -1;
+            initPomodoroWizard("Short Break");
+            updatePomodoroValue(cfgShortMin);
+        }
+    } else if (pomoState == POMO_SET_SHORT) {
+        if (encStep != 0) {
+            cfgShortMin = constrain(cfgShortMin + encStep, 1, 30);
+            updatePomodoroValue(cfgShortMin);
+        }
+        if (encPressed) {
+            pomoState = POMO_SET_LONG;
+            prevPomoVal = -1;
+            initPomodoroWizard("Long Break");
+            updatePomodoroValue(cfgLongMin);
+        }
+    } else if (pomoState == POMO_SET_LONG) {
+        if (encStep != 0) {
+            cfgLongMin = constrain(cfgLongMin + encStep, 1, 60);
+            updatePomodoroValue(cfgLongMin);
+        }
+        if (encPressed) {
+            pomoState = POMO_SET_CYCLES;
+            prevPomoVal = -1;
+            initPomodoroWizard("Set Cycles");
+            updatePomodoroValue(cfgCycles);
+        }
+    } else if (pomoState == POMO_SET_CYCLES) {
+        if (encStep != 0) {
+            cfgCycles = constrain(cfgCycles + encStep, 1, 10);
+            updatePomodoroValue(cfgCycles);
+        }
+        if (encPressed) {
+            pomoState = POMO_RUNNING;
+            pomoPhase = PHASE_WORK;
+            currentCycle = 1;
+            currentDurationMs = cfgWorkMin * 60UL * 1000UL;
+            pomoStartMillis = millis();
+            drawPomodoroScreen(true);
+        }
+    } else if (pomoState == POMO_RUNNING || pomoState == POMO_PAUSED) {
+        if (encPressed) {
+            if (pomoState == POMO_RUNNING) {
+                pomoState = POMO_PAUSED;
+                pomoPausedMillis = millis();
+                drawPomodoroScreen(true);
+            } else {
+                pomoStartMillis += (millis() - pomoPausedMillis);
+                pomoState = POMO_RUNNING;
+                drawPomodoroScreen(true);
+            }
+        }
+        if (pomoState == POMO_RUNNING) {
+            unsigned long elapsed = millis() - pomoStartMillis;
+            if (elapsed >= currentDurationMs) {
+                digitalWrite(LED_PIN, HIGH);
+                tone(BUZZ_PIN, 2000);
+                delay(3000);
+                noTone(BUZZ_PIN);
+                digitalWrite(LED_PIN, LOW);
+
+                if (pomoPhase == PHASE_WORK) {
+                    if (currentCycle < cfgCycles) {
+                        pomoPhase = PHASE_SHORT;
+                        currentDurationMs = cfgShortMin * 60UL * 1000UL;
+                    } else {
+                        pomoPhase = PHASE_LONG;
+                        currentDurationMs = cfgLongMin * 60UL * 1000UL;
+                    }
+                } else if (pomoPhase == PHASE_SHORT) {
+                    pomoPhase = PHASE_WORK;
+                    currentCycle++;
+                    currentDurationMs = cfgWorkMin * 60UL * 1000UL;
+                } else if (pomoPhase == PHASE_LONG) {
+                    pomoState = POMO_DONE;
+                    drawPomodoroScreen(true);
+                }
+                pomoStartMillis = millis();
+                if (pomoState != POMO_DONE) drawPomodoroScreen(true);
+            } else {
+                drawPomodoroScreen(false);
+            }
+        }
+    } else if (pomoState == POMO_DONE) {
+        if (encPressed) {
+            pomoState = POMO_SET_WORK;
+            prevPomoVal = -1;
+            initPomodoroWizard("Set Work");
+            updatePomodoroValue(cfgWorkMin);
+        }
+    }
+
+    if (k0Pressed) {
+        currentMode = MODE_MENU;
+        drawMenu(true);
+    }
+}
+
+void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
+    if (alarmRinging) {
+        static unsigned long lastBeep = 0;
+        if (millis() - lastBeep > 1000) {
+            lastBeep = millis();
+            tone(BUZZ_PIN, 2000, 400);
+        }
+        if (encPressed || k0Pressed) {
+            alarmRinging = false;
+            lastAlarmDayTriggered = -1;
+            noTone(BUZZ_PIN);
+            drawAlarmScreen(true);
+        }
+        return;
+    }
+
+    bool changed = false;
+    if (encStep != 0) {
+        if (alarmSelectedField == 0) {
+            alarmHour = (alarmHour + (encStep > 0 ? 1 : 23)) % 24;
+            changed = true;
+        } else if (alarmSelectedField == 1) {
+            alarmMinute = (alarmMinute + (encStep > 0 ? 1 : 59)) % 60;
+            changed = true;
+        } else if (alarmSelectedField == 2) {
+            alarmEnabled = !alarmEnabled;
+            changed = true;
+        }
+        if (changed) lastAlarmDayTriggered = -1;
+    }
+    if (encPressed) {
+        alarmSelectedField = (alarmSelectedField + 1) % 3;
+        changed = true;
+    }
+    if (k0Pressed) {
+        currentMode = MODE_MENU;
+        drawMenu(true);
+        return;
+    }
+    if (changed) {
+        drawAlarmScreen(false);
+        drawAlarmIcon();
+    }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  // Initialize History
   for(int i=0; i<HISTORY_LEN; i++) {
-    histTemp[i] = 0;
-    histHum[i]  = 0;
-    histTVOC[i] = 0;
-    histCO2[i]  = 400; 
+    histTemp[i] = 0; histHum[i] = 0; histTVOC[i] = 0; histCO2[i] = 400; 
   }
   historyHead = 0; 
 
@@ -879,7 +867,6 @@ void setup() {
   pinMode(ENC_B_PIN,   INPUT_PULLUP);
   pinMode(ENC_BTN_PIN, INPUT_PULLUP);
   pinMode(KEY0_PIN,    INPUT_PULLUP);
-
   pinMode(LED_PIN, OUTPUT);
   pinMode(BUZZ_PIN, OUTPUT);
 
@@ -905,277 +892,25 @@ void setup() {
   drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
 }
 
-// ========= LOOP =========
 void loop() {
   static unsigned long lastWifiCheck = 0;
   if (millis() - lastWifiCheck > 10000) {
     lastWifiCheck = millis();
-    if (WiFi.status() != WL_CONNECTED) {
-      WiFi.begin(ssid, password);
-    }
+    if (WiFi.status() != WL_CONNECTED) WiFi.begin(ssid, password);
   }
 
-  int encStep     = readEncoderStep();
+  int encStep = readEncoderStep();
   bool encPressed = checkButtonPressed(ENC_BTN_PIN, lastEncBtn);
-  bool k0Pressed  = checkButtonPressed(KEY0_PIN,    lastKey0);
+  bool k0Pressed = checkButtonPressed(KEY0_PIN, lastKey0);
 
   checkAlarmTrigger();
   updateAlertStateAndLED();
 
   switch (currentMode) {
-    case MODE_MENU: {
-      if (encStep != 0) {
-        int prevMenuIndex = menuIndex;
-        menuIndex += encStep;
-        if (menuIndex < 0) menuIndex = MENU_ITEMS - 1;
-        if (menuIndex >= MENU_ITEMS) menuIndex = 0;
-        
-        drawMenuItem(prevMenuIndex, false);
-        drawMenuItem(menuIndex, true);
-      }
-      if (encPressed) {
-        if (menuIndex == 0) {
-          currentMode = MODE_CLOCK;
-          initClockStaticUI();
-          prevTimeStr = "";
-          updateEnvSensors(true);
-          drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
-          drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
-        } else if (menuIndex == 1) {
-          currentMode = MODE_POMODORO;
-          pomoState = POMO_SET_WORK;
-          prevPomoVal = -1;
-          initPomodoroWizard("Set Work");
-          updatePomodoroValue(cfgWorkMin);
-        } else if (menuIndex == 2) {
-          currentMode = MODE_ALARM;
-          alarmSelectedField = 0;
-          drawAlarmScreen(true);
-        } else if (menuIndex == 3) {
-          currentMode = MODE_DVD;
-          dvdInited = false;
-        } 
-      }
-      
-      if (k0Pressed) {
-        currentMode = MODE_CLOCK;
-        initClockStaticUI();
-        prevTimeStr = "";
-        drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
-        drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
-      }
-      break;
-    }
-
-    case MODE_CLOCK: {
-      struct tm timeinfo;
-      if (getLocalTime(&timeinfo)) {
-        int sec = timeinfo.tm_sec;
-        if (sec != prevSecond) {
-          prevSecond = sec;
-          drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
-          
-          if (sec % 5 == 0) {
-            updateEnvSensors(true);
-            drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
-          } else {
-             updateEnvSensors(false);
-          }
-        }
-      }
-      if (k0Pressed) {
-        currentMode = MODE_MENU;
-        drawMenu(true); 
-      }
-      break;
-    }
-
-    // --- POMODORO WIZARD LOGIC ---
-    case MODE_POMODORO: {
-      if (pomoState == POMO_SET_WORK) {
-        if (encStep != 0) {
-          cfgWorkMin += encStep;
-          if (cfgWorkMin < 1) cfgWorkMin = 1;
-          if (cfgWorkMin > 90) cfgWorkMin = 90;
-          updatePomodoroValue(cfgWorkMin);
-        }
-        if (encPressed) {
-          pomoState = POMO_SET_SHORT;
-          prevPomoVal = -1;
-          initPomodoroWizard("Short Break");
-          updatePomodoroValue(cfgShortMin);
-        }
-      } 
-      else if (pomoState == POMO_SET_SHORT) {
-        if (encStep != 0) {
-          cfgShortMin += encStep;
-          if (cfgShortMin < 1) cfgShortMin = 1;
-          if (cfgShortMin > 30) cfgShortMin = 30;
-          updatePomodoroValue(cfgShortMin);
-        }
-        if (encPressed) {
-          pomoState = POMO_SET_LONG;
-          prevPomoVal = -1;
-          initPomodoroWizard("Long Break");
-          updatePomodoroValue(cfgLongMin);
-        }
-      }
-      else if (pomoState == POMO_SET_LONG) {
-        if (encStep != 0) {
-          cfgLongMin += encStep;
-          if (cfgLongMin < 1) cfgLongMin = 1;
-          if (cfgLongMin > 60) cfgLongMin = 60;
-          updatePomodoroValue(cfgLongMin);
-        }
-        if (encPressed) {
-          pomoState = POMO_SET_CYCLES;
-          prevPomoVal = -1;
-          initPomodoroWizard("Set Cycles");
-          updatePomodoroValue(cfgCycles);
-        }
-      }
-      else if (pomoState == POMO_SET_CYCLES) {
-        if (encStep != 0) {
-          cfgCycles += encStep;
-          if (cfgCycles < 1) cfgCycles = 1;
-          if (cfgCycles > 10) cfgCycles = 10;
-          updatePomodoroValue(cfgCycles);
-        }
-        if (encPressed) {
-          // Initialize Running State
-          pomoState = POMO_RUNNING;
-          pomoPhase = PHASE_WORK;
-          currentCycle = 1;
-          currentDurationMs = cfgWorkMin * 60UL * 1000UL;
-          pomoStartMillis = millis();
-          drawPomodoroScreen(true);
-        }
-      }
-      else if (pomoState == POMO_RUNNING || pomoState == POMO_PAUSED) {
-        if (encPressed) {
-          if (pomoState == POMO_RUNNING) {
-            pomoState = POMO_PAUSED;
-            pomoPausedMillis = millis();
-            drawPomodoroScreen(true);
-          } else {
-            unsigned long pausedDur = millis() - pomoPausedMillis;
-            pomoStartMillis += pausedDur;
-            pomoState = POMO_RUNNING;
-            drawPomodoroScreen(true);
-          }
-        }
-
-        if (pomoState == POMO_RUNNING) {
-          unsigned long elapsed = millis() - pomoStartMillis;
-          
-          if (elapsed >= currentDurationMs) {
-            // PHASE COMPLETE ALARM (3 seconds + LED)
-            digitalWrite(LED_PIN, HIGH);
-            tone(BUZZ_PIN, 2000); 
-            delay(3000);
-            noTone(BUZZ_PIN);
-            digitalWrite(LED_PIN, LOW);
-
-            if (pomoPhase == PHASE_WORK) {
-              if (currentCycle < cfgCycles) {
-                pomoPhase = PHASE_SHORT;
-                currentDurationMs = cfgShortMin * 60UL * 1000UL;
-              } else {
-                pomoPhase = PHASE_LONG;
-                currentDurationMs = cfgLongMin * 60UL * 1000UL;
-              }
-            } else if (pomoPhase == PHASE_SHORT) {
-              pomoPhase = PHASE_WORK;
-              currentCycle++;
-              currentDurationMs = cfgWorkMin * 60UL * 1000UL;
-            } else if (pomoPhase == PHASE_LONG) {
-              pomoState = POMO_DONE;
-              drawPomodoroScreen(true);
-            }
-            pomoStartMillis = millis();
-            if (pomoState != POMO_DONE) drawPomodoroScreen(true);
-          } else {
-             drawPomodoroScreen(false);
-          }
-        }
-      }
-      else if (pomoState == POMO_DONE) {
-        if (encPressed) {
-           pomoState = POMO_SET_WORK;
-           prevPomoVal = -1;
-           initPomodoroWizard("Set Work");
-           updatePomodoroValue(cfgWorkMin);
-        }
-      }
-
-      if (k0Pressed) {
-        currentMode = MODE_MENU;
-        drawMenu(true);
-      }
-      break;
-    }
-
-    case MODE_ALARM: {
-      if (alarmRinging) {
-        static unsigned long lastBeep = 0;
-        if (millis() - lastBeep > 1000) {
-          lastBeep = millis();
-          tone(BUZZ_PIN, 2000, 400);
-        }
-        if (encPressed || k0Pressed) {
-          alarmRinging = false;
-          lastAlarmDayTriggered = -1;
-          noTone(BUZZ_PIN);
-          drawAlarmScreen(true);
-        }
-        break;
-      }
-
-      bool changed = false;
-      if (encStep != 0) {
-        if (alarmSelectedField == 0) {
-          if (encStep > 0) alarmHour = (alarmHour + 1) % 24;
-          else             alarmHour = (alarmHour + 23) % 24;
-          changed = true;
-        } else if (alarmSelectedField == 1) {
-          if (encStep > 0) alarmMinute = (alarmMinute + 1) % 60;
-          else             alarmMinute = (alarmMinute + 59) % 60;
-          changed = true;
-        } else if (alarmSelectedField == 2) {
-          alarmEnabled = !alarmEnabled;
-          changed = true;
-        }
-
-        if (changed) {
-          lastAlarmDayTriggered = -1;
-        }
-      }
-
-      if (encPressed) {
-        alarmSelectedField = (alarmSelectedField + 1) % 3;
-        changed = true;
-      }
-
-      if (k0Pressed) {
-        currentMode = MODE_MENU;
-        drawMenu(true);
-        break;
-      }
-
-      if (changed) {
-        drawAlarmScreen(false);
-        drawAlarmIcon();
-      }
-
-      break;
-    }
-
-    case MODE_DVD: {
-      if (!dvdInited) {
-        initDvd();
-      }
-      updateDvd(encStep, encPressed, k0Pressed);
-      break;
-    }
+    case MODE_MENU:     runMenu(encStep, encPressed, k0Pressed); break;
+    case MODE_CLOCK:    runClock(k0Pressed); break;
+    case MODE_POMODORO: runPomodoro(encStep, encPressed, k0Pressed); break;
+    case MODE_ALARM:    runAlarm(encStep, encPressed, k0Pressed); break;
+    case MODE_DVD:      if (!dvdInited) initDvd(); updateDvd(encStep, encPressed, k0Pressed); break;
   }
 }
