@@ -35,7 +35,7 @@ const int   daylightOffset_sec = 0;
 // ====== TFT & Sensors ======
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST); 
 Adafruit_AHTX0   aht;
-ScioSense_ENS160 ens160(0x53);   // ENS160 I2C address 0x53
+ScioSense_ENS160 ens160(0x53);
 
 // ====== Screen Dimensions ======
 #define SCREEN_WIDTH  320
@@ -56,6 +56,7 @@ ScioSense_ENS160 ens160(0x53);   // ENS160 I2C address 0x53
 #define AQ_BAR_ORANGE 0xFD20
 #define AQ_BAR_RED    0xF800
 #define CYBER_DARK    0x4208
+#define GRID_COLOR    0x2104 
 
 #ifndef PI
 #define PI 3.1415926
@@ -81,7 +82,7 @@ enum PomodoroState {
   POMO_DONE
 };
 PomodoroState pomoState = POMO_SELECT;
-int  pomoPresetIndex    = 0;                   // 0:5, 1:15, 2:30
+int  pomoPresetIndex    = 0;
 const uint16_t pomoDurationsMin[3] = {5, 15, 30};
 unsigned long pomoStartMillis = 0;
 unsigned long pomoPausedMillis = 0;
@@ -95,6 +96,21 @@ float    curHum  = 0;
 uint16_t curTVOC = 0;
 uint16_t curECO2 = 400;
 unsigned long lastEnvRead = 0;
+
+// ====== Graph History ======
+#define HISTORY_LEN 320 
+uint16_t histTemp[HISTORY_LEN];
+uint16_t histHum[HISTORY_LEN];
+uint16_t histTVOC[HISTORY_LEN];
+uint16_t histCO2[HISTORY_LEN];
+
+int historyHead = 0;
+unsigned long lastHistoryAdd = 0;
+const unsigned long HISTORY_INTERVAL = 60000; 
+
+// Forward declarations
+void drawHistoryGraph(); 
+void printCenteredText(const String &txt, int x0, int x1, int y, uint16_t color, uint16_t bg, uint8_t size);
 
 // ====== Clock vars ======
 int    prevSecond  = -1;
@@ -112,7 +128,7 @@ bool     alarmEnabled = false;
 uint8_t  alarmHour    = 7;
 uint8_t  alarmMinute  = 0;
 bool     alarmRinging = false;
-int      alarmSelectedField = 0; // 0 = hour, 1 = minute, 2 = enable
+int      alarmSelectedField = 0; 
 int      lastAlarmDayTriggered = -1;
 
 // ====== Alert / LED Blink ======
@@ -127,6 +143,23 @@ bool ledState = false;
 
 unsigned long lastCo2BlinkMs = 0;
 bool co2BlinkOn = false;
+
+// ========= Layout Constants (MOVED DOWN) =========
+const int GRID_L   = 10;
+const int GRID_R   = 310;
+const int GRID_MID_X = (GRID_L + GRID_R) / 2;
+
+// Moved Top down to 75 (was 60)
+// Height remains 32px per row
+const int GRID_TOP = 75; 
+const int GRID_MID = 107;
+const int GRID_BOT = 139;
+
+// Offsets
+const int TOP_LABEL_Y    = GRID_TOP + 4;  
+const int TOP_VALUE_Y    = GRID_TOP + 14; 
+const int BOTTOM_LABEL_Y = GRID_MID + 4;  
+const int BOTTOM_VALUE_Y = GRID_MID + 14; 
 
 // ========= Helper: encoder & button =========
 int readEncoderStep() {
@@ -156,7 +189,7 @@ bool checkButtonPressed(uint8_t pin, bool &lastState) {
   return pressed;
 }
 
-// ========= Alarm icon (UPDATED POSITION) =========
+// ========= UI Helpers =========
 void drawAlarmIcon() {
   int x = SCREEN_WIDTH - 24; 
   tft.fillRect(x - 10, 0, 24, 24, CYBER_BG);
@@ -166,6 +199,24 @@ void drawAlarmIcon() {
   tft.drawRoundRect(x - 9, 4, 18, 14, 4, c);
   tft.drawFastHLine(x - 7, 16, 14, c);
   tft.fillCircle(x, 19, 2, c);
+}
+
+void printCenteredText(const String &txt, int x0, int x1, int y, uint16_t color, uint16_t bg, uint8_t size) {
+  int16_t bx, by;
+  uint16_t w, h;
+  tft.setTextSize(size);
+  tft.getTextBounds(txt, 0, 0, &bx, &by, &w, &h);
+  int x = x0 + ((x1 - x0) - (int)w) / 2;
+  tft.setTextColor(color, bg);
+  tft.setCursor(x, y);
+  tft.print(txt);
+}
+
+uint16_t colorForCO2(uint16_t eco2) {
+  if (eco2 <= 800)  return AQ_BAR_GREEN;
+  if (eco2 <= 1200) return AQ_BAR_YELLOW;
+  if (eco2 <= 1800) return AQ_BAR_ORANGE;
+  return AQ_BAR_RED;
 }
 
 // ========= WiFi & Time =========
@@ -209,98 +260,121 @@ String getTimeStr(char type) {
   return String(buf);
 }
 
-// ========= Env Sensors =========
+// ========= Env Sensors & History Logic =========
+void recordHistory(float t, float h, uint16_t tvoc, uint16_t eco2) {
+  histTemp[historyHead] = (uint16_t)(t * 10); 
+  histHum[historyHead]  = (uint16_t)h;
+  histTVOC[historyHead] = tvoc;
+  histCO2[historyHead]  = eco2;
+  
+  historyHead = (historyHead + 1) % HISTORY_LEN;
+  
+  if (currentMode == MODE_CLOCK) {
+    drawHistoryGraph();
+  }
+}
+
 void updateEnvSensors(bool force = false) {
   unsigned long now = millis();
-  if (!force && (now - lastEnvRead) < 5000) return;
-  lastEnvRead = now;
-
-  sensors_event_t hum, temp;
-  if (aht.getEvent(&hum, &temp)) {
-    curTemp = temp.temperature;
-    curHum  = hum.relative_humidity;
+  
+  if (force || (now - lastEnvRead) > 5000) {
+    lastEnvRead = now;
+    sensors_event_t hum, temp;
+    if (aht.getEvent(&hum, &temp)) {
+      curTemp = temp.temperature;
+      curHum  = hum.relative_humidity;
+    }
+    ens160.set_envdata(curTemp, curHum);
+    ens160.measure();
+    uint16_t newTVOC = ens160.getTVOC();
+    uint16_t newCO2  = ens160.geteCO2();
+    if (newTVOC != 0xFFFF) curTVOC = newTVOC;
+    if (newCO2  != 0xFFFF) curECO2 = newCO2;
   }
 
-  ens160.set_envdata(curTemp, curHum);
-  ens160.measure();                      
-
-  uint16_t newTVOC = ens160.getTVOC();
-  uint16_t newCO2  = ens160.geteCO2();
-
-  if (newTVOC != 0xFFFF) curTVOC = newTVOC;
-  if (newCO2  != 0xFFFF) curECO2 = newCO2;
+  if (now - lastHistoryAdd > HISTORY_INTERVAL) {
+    lastHistoryAdd = now;
+    recordHistory(curTemp, curHum, curTVOC, curECO2);
+  }
 }
 
-// ========= Clock UI (SCALED FOR 320x240) =========
-const int GRID_L   = 8;
-const int GRID_R   = 312;
-const int GRID_TOP = 110;
-const int GRID_MID = 150;
-const int GRID_BOT = 190;
-const int GRID_MID_X = (GRID_L + GRID_R) / 2;
+// ========= Graph Drawing (4 Lines) =========
+void drawHistoryGraph() {
+  const int gX = 0;
+  const int gY = 145;      // Moved down to accommodate table (ends at 139)
+  const int gW = 320;
+  const int gH = 90;       // Reduced height to fit screen bottom
+  const int gBottom = gY + gH; // Ends at 235
+  
+  // Clear Graph Area
+  tft.fillRect(gX, gY, gW, gH, CYBER_BG);
+  
+  // Grid
+  tft.drawFastHLine(gX, gY + gH/4, gW, GRID_COLOR);
+  tft.drawFastHLine(gX, gY + gH/2, gW, GRID_COLOR);
+  tft.drawFastHLine(gX, gY + 3*gH/4, gW, GRID_COLOR);
 
-const int TOP_LABEL_Y    = GRID_TOP + 8;  
-const int TOP_VALUE_Y    = GRID_TOP + 24; 
-const int BOTTOM_LABEL_Y = GRID_MID + 8;  
-const int BOTTOM_VALUE_Y = GRID_MID + 24; 
+  int pX = -1;
+  int pY_T = -1, pY_H = -1, pY_V = -1, pY_C = -1;
 
-const int BAR_MARGIN_X = 10;
-const int BAR_GAP      = 4;
-const int BAR_Y        = 205;
-const int BAR_H        = 12;
-const int BAR_W        = (320 - 2 * BAR_MARGIN_X - 3 * BAR_GAP) / 4; 
+  for (int i = 0; i < HISTORY_LEN; i++) {
+    int idx = (historyHead + i) % HISTORY_LEN;
+    
+    // Scale Values to Graph Height
+    // Temp: 0 - 50 C
+    int valT = histTemp[idx] / 10; 
+    int yT = map(constrain(valT, 0, 50), 0, 50, gBottom-2, gY+2);
 
-void printCenteredText(const String &txt,
-                       int x0, int x1,
-                       int y,
-                       uint16_t color,
-                       uint16_t bg,
-                       uint8_t size = 1) {
-  int16_t bx, by;
-  uint16_t w, h;
-  tft.setTextSize(size);
-  tft.getTextBounds(txt, 0, 0, &bx, &by, &w, &h);
-  int x = x0 + ((x1 - x0) - (int)w) / 2;
-  tft.setTextColor(color, bg);
-  tft.setCursor(x, y);
-  tft.print(txt);
+    // Hum: 0 - 100 %
+    int valH = histHum[idx];
+    int yH = map(constrain(valH, 0, 100), 0, 100, gBottom-2, gY+2);
+
+    // TVOC: 0 - 1000
+    int valV = histTVOC[idx];
+    int yV = map(constrain(valV, 0, 1000), 0, 1000, gBottom-2, gY+2);
+
+    // CO2: 400 - 3000
+    int valC = histCO2[idx];
+    int yC = map(constrain(valC, 400, 3000), 400, 3000, gBottom-2, gY+2);
+
+    int x = i;
+
+    if (i > 0) {
+       tft.drawLine(pX, pY_T, x, yT, CYBER_LIGHT); // Orange (Temp)
+       tft.drawLine(pX, pY_H, x, yH, CYBER_BLUE);  // Blue (Hum)
+       tft.drawLine(pX, pY_V, x, yV, CYBER_GREEN); // Green (TVOC)
+       tft.drawLine(pX, pY_C, x, yC, ST77XX_WHITE); // White (CO2)
+    }
+
+    pX = x;
+    pY_T = yT;
+    pY_H = yH;
+    pY_V = yV;
+    pY_C = yC;
+  }
+
+  // Border
+  tft.drawRect(gX, gY, gW, gH, GRID_COLOR);
 }
 
-uint16_t colorForCO2(uint16_t eco2) {
-  if (eco2 <= 800)  return AQ_BAR_GREEN;
-  if (eco2 <= 1200) return AQ_BAR_YELLOW;
-  if (eco2 <= 1800) return AQ_BAR_ORANGE;
-  return AQ_BAR_RED;
-}
-
+// ========= Clock UI =========
 void initClockStaticUI() {
   tft.fillScreen(CYBER_BG);
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_WHITE);
-
-  tft.setCursor(10, 10);
-  tft.print("Monitor");
-
-  tft.setCursor(10, 85);
-  tft.print("Air Quality:");
-
+  drawAlarmIcon();
+  
+  // Draw Grid Lines (Moved Down)
   tft.drawFastHLine(GRID_L, GRID_TOP, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastHLine(GRID_L, GRID_MID, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastHLine(GRID_L, GRID_BOT, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastVLine(GRID_MID_X, GRID_TOP, GRID_BOT - GRID_TOP, ST77XX_WHITE);
 
+  // Draw Static Labels
   printCenteredText("HUMI", GRID_L,     GRID_MID_X, TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TEMP", GRID_MID_X, GRID_R,     TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TVOC", GRID_L,     GRID_MID_X, BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("CO2",  GRID_MID_X, GRID_R,     BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
 
-  int x = BAR_MARGIN_X;
-  tft.fillRect(x,                       BAR_Y, BAR_W, BAR_H, AQ_BAR_GREEN);
-  tft.fillRect(x + (BAR_W + BAR_GAP),       BAR_Y, BAR_W, BAR_H, AQ_BAR_YELLOW);
-  tft.fillRect(x + 2 * (BAR_W + BAR_GAP),   BAR_Y, BAR_W, BAR_H, AQ_BAR_ORANGE);
-  tft.fillRect(x + 3 * (BAR_W + BAR_GAP),   BAR_Y, BAR_W, BAR_H, AQ_BAR_RED);
-
-  drawAlarmIcon();
+  drawHistoryGraph();
 }
 
 void drawClockTime(String hourStr, String minStr, String secStr) {
@@ -311,26 +385,18 @@ void drawClockTime(String hourStr, String minStr, String secStr) {
   int16_t x1, y1;
   uint16_t w, h;
   tft.setTextSize(6); 
-  tft.getTextBounds(cur, 0, 0, &x1, &y1, &w, &h);
+  
+  tft.getTextBounds("88:88:88", 0, 0, &x1, &y1, &w, &h);
   int x = (SCREEN_WIDTH - w) / 2;
-  int y = 35;
+  int y = 10; 
 
   tft.setTextColor(CYBER_ACCENT, CYBER_BG);
   tft.setCursor(x, y);
   tft.print(cur);
 }
 
-void drawCO2Value(uint16_t eco2, uint16_t col) {
-  char co2Buf[12];
-  sprintf(co2Buf, "%4uppm", eco2);
-  printCenteredText(String(co2Buf),
-                    GRID_MID_X, GRID_R,
-                    BOTTOM_VALUE_Y,
-                    col, CYBER_BG, 2);
-}
-
 void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
-  uint16_t colHUMI = CYBER_ACCENT;
+  uint16_t colHUMI = CYBER_BLUE;
   uint16_t colTEMP = CYBER_LIGHT;
   uint16_t colTVOC = CYBER_GREEN;
   uint16_t colCO2  = colorForCO2(eco2);
@@ -351,42 +417,28 @@ void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
                     TOP_VALUE_Y,
                     colTEMP, CYBER_BG, 2);
 
-  // TVOC (mg/m3)
-  float tvoc_mg = tvoc / 1000.0f;
+  // TVOC
   char tvocBuf[16];
-  sprintf(tvocBuf, "%.3fmg", tvoc_mg);
+  sprintf(tvocBuf, "%d", tvoc);
   printCenteredText(String(tvocBuf),
                     GRID_L, GRID_MID_X,
                     BOTTOM_VALUE_Y,
                     colTVOC, CYBER_BG, 2);
 
-  // CO2 (ppm)
-  drawCO2Value(eco2, colCO2);
-
-  // Color Bar Indicator
-  uint8_t level = 1;
-  if (eco2 > 1800) level = 4;
-  else if (eco2 > 1200) level = 3;
-  else if (eco2 > 800)  level = 2;
-
-  tft.fillRect(0, BAR_Y + BAR_H + 1, SCREEN_WIDTH, 10, CYBER_BG);
-  int centerX = BAR_MARGIN_X + (BAR_W / 2) + (level - 1) * (BAR_W + BAR_GAP);
-  int tipY    = BAR_Y + BAR_H + 4;
-  tft.fillTriangle(centerX,     tipY - 4,
-                   centerX - 6, tipY + 6,
-                   centerX + 6, tipY + 6,
-                   ST77XX_WHITE);
+  // CO2
+  char co2Buf[12];
+  sprintf(co2Buf, "%d", eco2);
+  printCenteredText(String(co2Buf),
+                    GRID_MID_X, GRID_R,
+                    BOTTOM_VALUE_Y,
+                    colCO2, CYBER_BG, 2);
 }
 
 // ========= Menu UI =========
 void drawMenu() {
   tft.fillScreen(CYBER_BG);
-
-  tft.setTextSize(2);
-  tft.setTextColor(CYBER_LIGHT);
-  tft.setCursor(20, 20);
-  tft.print("MODE SELECT");
-
+  tft.setTextSize(2); 
+  
   const char* items[MENU_ITEMS] = {
     "Monitor",
     "Pomodoro",
@@ -395,7 +447,7 @@ void drawMenu() {
   };
 
   for (int i = 0; i < MENU_ITEMS; i++) {
-    int y = 60 + i * 35; 
+    int y = 40 + i * 40; 
     if (i == menuIndex) {
       tft.fillRect(10, y - 4, 300, 28, CYBER_ACCENT);
       tft.setTextColor(CYBER_BG);
@@ -409,7 +461,7 @@ void drawMenu() {
   drawAlarmIcon();
 }
 
-// ========= Pomodoro (SCALED) =========
+// ========= Pomodoro =========
 uint16_t pomoColorFromFrac(float f) {
   if (f < 0.33f) return AQ_BAR_GREEN;
   if (f < 0.66f) return AQ_BAR_YELLOW;
@@ -428,7 +480,7 @@ void drawPomodoroRing(float progress) {
   const float spanDeg  = endDeg - startDeg;   
 
   for (float deg = startDeg; deg <= endDeg; deg += 3.0f) { 
-    float frac = (deg - startDeg) / spanDeg;   // 0..1
+    float frac = (deg - startDeg) / spanDeg; 
     uint16_t col = (frac <= progress) ? pomoColorFromFrac(frac) : CYBER_DARK;
 
     float rad = deg * PI / 180.0f;
@@ -452,11 +504,6 @@ void drawPomodoroScreen(bool forceStatic) {
 
   if (needStatic) {
     tft.fillScreen(CYBER_BG);
-    tft.fillRect(0, 0, SCREEN_WIDTH, 30, CYBER_BG);
-    tft.setTextSize(2);
-    tft.setCursor(16, 8);
-    tft.setTextColor(CYBER_LIGHT);
-    tft.print("POMODORO");
     drawAlarmIcon();
   }
 
@@ -503,14 +550,10 @@ void drawPomodoroScreen(bool forceStatic) {
   else if (pomoState == POMO_DONE)   tft.print("Completed");
 }
 
-// ========= Alarm UI (SCALED) =========
+// ========= Alarm UI (NO TITLE) =========
 void drawAlarmScreen(bool full) {
   if (full) {
     tft.fillScreen(CYBER_BG);
-    tft.setTextSize(2);
-    tft.setCursor(16, 8);
-    tft.setTextColor(CYBER_LIGHT);
-    tft.print("ALARM");
     drawAlarmIcon();
   }
 
@@ -576,25 +619,21 @@ void checkAlarmTrigger() {
   }
 }
 
-// ========= Alert visual + audio (UPDATED) =========
+// ========= Alert visual + audio =========
 void updateAlertStateAndLED() {
-  // 1. Determine Alert Level
   if (alarmRinging) currentAlertLevel = ALERT_ALARM;
   else if (curECO2 > 1800) currentAlertLevel = ALERT_CO2;
   else currentAlertLevel = ALERT_NONE;
 
   unsigned long now = millis();
 
-  // 2. Handle LED Logic
   if (currentAlertLevel == ALERT_NONE) {
-    // FORCE OFF if no danger/alarm (Stop the heartbeat blink)
     digitalWrite(LED_PIN, LOW);
     ledState = false; 
   } else {
-    // Blink only if Alarm or High CO2
     unsigned long interval;
-    if (currentAlertLevel == ALERT_ALARM)      interval = 120; // Fast panic blink
-    else /* ALERT_CO2 */                       interval = 250; // Fast warning blink
+    if (currentAlertLevel == ALERT_ALARM)      interval = 120; 
+    else /* ALERT_CO2 */                       interval = 250; 
 
     if (now - lastLedToggleMs > interval) {
       lastLedToggleMs = now;
@@ -603,20 +642,16 @@ void updateAlertStateAndLED() {
     }
   }
 
-  // 3. Handle Screen Blinking/Buzzer for CO2 (Visual/Audio warning)
   if (currentAlertLevel == ALERT_CO2) {
     if (now - lastCo2BlinkMs > 350) {
       lastCo2BlinkMs = now;
       co2BlinkOn = !co2BlinkOn;
-      uint16_t baseCol = colorForCO2(curECO2);
-      uint16_t col = co2BlinkOn ? baseCol : CYBER_DARK;
-      drawCO2Value(curECO2, col);
       tone(BUZZ_PIN, 1800, 80);
     }
   }
 }
 
-// ========= DVD screensaver (SCALED) =========
+// ========= DVD screensaver (NO TITLE) =========
 bool dvdInited = false;
 int  dvdX, dvdY;
 int  dvdVX = 2;
@@ -653,10 +688,6 @@ void drawDvdLogo(int x, int y, uint16_t c) {
 void initDvd() {
   dvdInited = true;
   tft.fillScreen(CYBER_BG);
-  tft.setTextSize(2);
-  tft.setTextColor(CYBER_LIGHT, CYBER_BG);
-  tft.setCursor(16, 8);
-  tft.print("DVD");
   drawAlarmIcon();
   dvdX = 80;
   dvdY = 80;
@@ -695,7 +726,7 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
 
   int left   = 0;
   int right  = SCREEN_WIDTH - dvdW;
-  int top    = 30;
+  int top    = 0; 
   int bottom = SCREEN_HEIGHT - dvdH;
 
   bool hitX = false;
@@ -736,6 +767,25 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
 void setup() {
   Serial.begin(115200);
   delay(1500);
+
+  // Initialize History with Sample Wave Data for Testing (4 Lines)
+  for(int i=0; i<HISTORY_LEN; i++) {
+    float a1 = (float)i / HISTORY_LEN * 3.14159 * 2;
+    float a2 = (float)i / HISTORY_LEN * 3.14159 * 4;
+    
+    // Temp (0-50): sine from 20 to 30
+    histTemp[i] = (uint16_t)((25 + 5*sin(a1)) * 10);
+    
+    // Hum (0-100): cosine from 50 to 80
+    histHum[i]  = (uint16_t)(65 + 15*cos(a1 + 1));
+    
+    // TVOC (0-1000): fast wave 100-300
+    histTVOC[i] = (uint16_t)(200 + 100*sin(a2));
+    
+    // CO2 (400-3000): slow wave 600-1200
+    histCO2[i]  = (uint16_t)(900 + 300*cos(a1));
+  }
+  historyHead = 0; 
 
   pinMode(ENC_A_PIN,   INPUT_PULLUP);
   pinMode(ENC_B_PIN,   INPUT_PULLUP);
@@ -816,6 +866,15 @@ void loop() {
           dvdInited = false;
         } 
       }
+      
+      // Cancel menu with K0
+      if (k0Pressed) {
+        currentMode = MODE_CLOCK;
+        initClockStaticUI();
+        prevTimeStr = "";
+        drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+        drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
+      }
       break;
     }
 
@@ -826,9 +885,12 @@ void loop() {
         if (sec != prevSecond) {
           prevSecond = sec;
           drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+          
           if (sec % 5 == 0) {
             updateEnvSensors(true);
             drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
+          } else {
+             updateEnvSensors(false);
           }
         }
       }
