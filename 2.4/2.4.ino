@@ -58,6 +58,12 @@ ScioSense_ENS160 ens160(0x53);
 #define CYBER_DARK    0x4208
 #define GRID_COLOR    0x2104 
 
+// Graph & Text Colors
+#define COL_TEMP      ST77XX_RED
+#define COL_HUM       CYBER_BLUE
+#define COL_TVOC      CYBER_GREEN
+#define COL_CO2       ST77XX_YELLOW 
+
 #ifndef PI
 #define PI 3.1415926
 #endif
@@ -74,21 +80,48 @@ UIMode currentMode = MODE_CLOCK;
 int menuIndex = 0;
 const int MENU_ITEMS = 4;
 
+const char* menuLabels[MENU_ITEMS] = {
+  "Monitor",
+  "Pomodoro",
+  "Alarm",
+  "DVD"
+};
+
 // ====== Pomodoro ======
 enum PomodoroState {
-  POMO_SELECT = 0,
+  POMO_SET_WORK = 0,
+  POMO_SET_SHORT,
+  POMO_SET_LONG,
+  POMO_SET_CYCLES,
+  POMO_READY,
   POMO_RUNNING,
   POMO_PAUSED,
   POMO_DONE
 };
-PomodoroState pomoState = POMO_SELECT;
-int  pomoPresetIndex    = 0;
-const uint16_t pomoDurationsMin[3] = {5, 15, 30};
+
+enum PomoPhase {
+  PHASE_WORK,
+  PHASE_SHORT,
+  PHASE_LONG
+};
+
+PomodoroState pomoState = POMO_SET_WORK;
+PomoPhase     pomoPhase = PHASE_WORK;
+
+// Config Variables
+int cfgWorkMin  = 25;
+int cfgShortMin = 5;
+int cfgLongMin  = 15;
+int cfgCycles   = 4;
+
+// Runtime Variables
+int currentCycle = 1;
 unsigned long pomoStartMillis = 0;
 unsigned long pomoPausedMillis = 0;
+unsigned long currentDurationMs = 0;
 int prevPomoRemainSec  = -1;
-int prevPomoPreset     = -1;
-int prevPomoStateInt   = -1;
+int prevPomoVal        = -1; 
+int prevBarWidth       = -1; 
 
 // ====== Env values ======
 float    curTemp = 0;
@@ -106,11 +139,16 @@ uint16_t histCO2[HISTORY_LEN];
 
 int historyHead = 0;
 unsigned long lastHistoryAdd = 0;
-const unsigned long HISTORY_INTERVAL = 60000; 
+const unsigned long HISTORY_INTERVAL = 1000; 
 
 // Forward declarations
 void drawHistoryGraph(); 
 void printCenteredText(const String &txt, int x0, int x1, int y, uint16_t color, uint16_t bg, uint8_t size);
+void drawMenuItem(int index, bool selected); 
+void drawMenu(bool fullRedraw);
+void initPomodoroWizard(const char* title);
+void updatePomodoroValue(int value);
+void drawPomodoroScreen(bool forceStatic);
 
 // ====== Clock vars ======
 int    prevSecond  = -1;
@@ -144,18 +182,15 @@ bool ledState = false;
 unsigned long lastCo2BlinkMs = 0;
 bool co2BlinkOn = false;
 
-// ========= Layout Constants (MOVED DOWN) =========
+// ========= Layout Constants =========
 const int GRID_L   = 10;
 const int GRID_R   = 310;
 const int GRID_MID_X = (GRID_L + GRID_R) / 2;
 
-// Moved Top down to 75 (was 60)
-// Height remains 32px per row
 const int GRID_TOP = 75; 
 const int GRID_MID = 107;
 const int GRID_BOT = 139;
 
-// Offsets
 const int TOP_LABEL_Y    = GRID_TOP + 4;  
 const int TOP_VALUE_Y    = GRID_TOP + 14; 
 const int BOTTOM_LABEL_Y = GRID_MID + 4;  
@@ -277,7 +312,7 @@ void recordHistory(float t, float h, uint16_t tvoc, uint16_t eco2) {
 void updateEnvSensors(bool force = false) {
   unsigned long now = millis();
   
-  if (force || (now - lastEnvRead) > 5000) {
+  if (force || (now - lastEnvRead) >= 1000) { 
     lastEnvRead = now;
     sensors_event_t hum, temp;
     if (aht.getEvent(&hum, &temp)) {
@@ -292,24 +327,22 @@ void updateEnvSensors(bool force = false) {
     if (newCO2  != 0xFFFF) curECO2 = newCO2;
   }
 
-  if (now - lastHistoryAdd > HISTORY_INTERVAL) {
+  if (now - lastHistoryAdd >= HISTORY_INTERVAL) {
     lastHistoryAdd = now;
     recordHistory(curTemp, curHum, curTVOC, curECO2);
   }
 }
 
-// ========= Graph Drawing (4 Lines) =========
+// ========= Graph Drawing =========
 void drawHistoryGraph() {
   const int gX = 0;
-  const int gY = 145;      // Moved down to accommodate table (ends at 139)
+  const int gY = 145;      
   const int gW = 320;
-  const int gH = 90;       // Reduced height to fit screen bottom
-  const int gBottom = gY + gH; // Ends at 235
+  const int gH = 90;       
+  const int gBottom = gY + gH;
   
-  // Clear Graph Area
   tft.fillRect(gX, gY, gW, gH, CYBER_BG);
   
-  // Grid
   tft.drawFastHLine(gX, gY + gH/4, gW, GRID_COLOR);
   tft.drawFastHLine(gX, gY + gH/2, gW, GRID_COLOR);
   tft.drawFastHLine(gX, gY + 3*gH/4, gW, GRID_COLOR);
@@ -320,30 +353,25 @@ void drawHistoryGraph() {
   for (int i = 0; i < HISTORY_LEN; i++) {
     int idx = (historyHead + i) % HISTORY_LEN;
     
-    // Scale Values to Graph Height
-    // Temp: 0 - 50 C
     int valT = histTemp[idx] / 10; 
-    int yT = map(constrain(valT, 0, 50), 0, 50, gBottom-2, gY+2);
+    int yT = map(constrain(valT, 15, 35), 15, 35, gBottom-2, gY+2);
 
-    // Hum: 0 - 100 %
     int valH = histHum[idx];
-    int yH = map(constrain(valH, 0, 100), 0, 100, gBottom-2, gY+2);
+    int yH = map(constrain(valH, 20, 80), 20, 80, gBottom-2, gY+2);
 
-    // TVOC: 0 - 1000
     int valV = histTVOC[idx];
-    int yV = map(constrain(valV, 0, 1000), 0, 1000, gBottom-2, gY+2);
+    int yV = map(constrain(valV, 0, 600), 0, 600, gBottom-2, gY+2);
 
-    // CO2: 400 - 3000
     int valC = histCO2[idx];
-    int yC = map(constrain(valC, 400, 3000), 400, 3000, gBottom-2, gY+2);
+    int yC = map(constrain(valC, 400, 2500), 400, 2500, gBottom-2, gY+2);
 
     int x = i;
 
     if (i > 0) {
-       tft.drawLine(pX, pY_T, x, yT, CYBER_LIGHT); // Orange (Temp)
-       tft.drawLine(pX, pY_H, x, yH, CYBER_BLUE);  // Blue (Hum)
-       tft.drawLine(pX, pY_V, x, yV, CYBER_GREEN); // Green (TVOC)
-       tft.drawLine(pX, pY_C, x, yC, ST77XX_WHITE); // White (CO2)
+       tft.drawLine(pX, pY_T, x, yT, COL_TEMP); 
+       tft.drawLine(pX, pY_H, x, yH, COL_HUM);  
+       tft.drawLine(pX, pY_V, x, yV, COL_TVOC); 
+       tft.drawLine(pX, pY_C, x, yC, COL_CO2); 
     }
 
     pX = x;
@@ -353,7 +381,6 @@ void drawHistoryGraph() {
     pY_C = yC;
   }
 
-  // Border
   tft.drawRect(gX, gY, gW, gH, GRID_COLOR);
 }
 
@@ -362,13 +389,11 @@ void initClockStaticUI() {
   tft.fillScreen(CYBER_BG);
   drawAlarmIcon();
   
-  // Draw Grid Lines (Moved Down)
   tft.drawFastHLine(GRID_L, GRID_TOP, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastHLine(GRID_L, GRID_MID, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastHLine(GRID_L, GRID_BOT, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastVLine(GRID_MID_X, GRID_TOP, GRID_BOT - GRID_TOP, ST77XX_WHITE);
 
-  // Draw Static Labels
   printCenteredText("HUMI", GRID_L,     GRID_MID_X, TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TEMP", GRID_MID_X, GRID_R,     TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TVOC", GRID_L,     GRID_MID_X, BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
@@ -390,167 +415,197 @@ void drawClockTime(String hourStr, String minStr, String secStr) {
   int x = (SCREEN_WIDTH - w) / 2;
   int y = 10; 
 
-  tft.setTextColor(CYBER_ACCENT, CYBER_BG);
+  tft.setTextColor(ST77XX_WHITE, CYBER_BG);
   tft.setCursor(x, y);
   tft.print(cur);
 }
 
 void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
-  uint16_t colHUMI = CYBER_BLUE;
-  uint16_t colTEMP = CYBER_LIGHT;
-  uint16_t colTVOC = CYBER_GREEN;
-  uint16_t colCO2  = colorForCO2(eco2);
-
-  // HUMI
   char humBuf[8];
   sprintf(humBuf, "%2.0f%%", hum);
   printCenteredText(String(humBuf),
                     GRID_L, GRID_MID_X,
                     TOP_VALUE_Y,
-                    colHUMI, CYBER_BG, 2);
+                    COL_HUM, CYBER_BG, 2);
 
-  // TEMP
   char tempBuf[10];
   sprintf(tempBuf, "%2.1fC", temp);
   printCenteredText(String(tempBuf),
                     GRID_MID_X, GRID_R,
                     TOP_VALUE_Y,
-                    colTEMP, CYBER_BG, 2);
+                    COL_TEMP, CYBER_BG, 2);
 
-  // TVOC
   char tvocBuf[16];
   sprintf(tvocBuf, "%d", tvoc);
   printCenteredText(String(tvocBuf),
                     GRID_L, GRID_MID_X,
                     BOTTOM_VALUE_Y,
-                    colTVOC, CYBER_BG, 2);
+                    COL_TVOC, CYBER_BG, 2);
 
-  // CO2
   char co2Buf[12];
   sprintf(co2Buf, "%d", eco2);
   printCenteredText(String(co2Buf),
                     GRID_MID_X, GRID_R,
                     BOTTOM_VALUE_Y,
-                    colCO2, CYBER_BG, 2);
+                    COL_CO2, CYBER_BG, 2);
 }
 
 // ========= Menu UI =========
-void drawMenu() {
-  tft.fillScreen(CYBER_BG);
-  tft.setTextSize(2); 
-  
-  const char* items[MENU_ITEMS] = {
-    "Monitor",
-    "Pomodoro",
-    "Alarm",
-    "DVD"
-  };
+void drawMenuItem(int index, bool selected) {
+  if (index < 0 || index >= MENU_ITEMS) return;
 
-  for (int i = 0; i < MENU_ITEMS; i++) {
-    int y = 40 + i * 40; 
-    if (i == menuIndex) {
-      tft.fillRect(10, y - 4, 300, 28, CYBER_ACCENT);
-      tft.setTextColor(CYBER_BG);
-    } else {
-      tft.fillRect(10, y - 4, 300, 28, CYBER_BG);
-      tft.setTextColor(ST77XX_WHITE);
-    }
-    tft.setCursor(24, y);
-    tft.print(items[i]);
-  }
-  drawAlarmIcon();
-}
+  int rowCenterY = 60 + index * 40;
+  int boxY = rowCenterY - 14;
+  int boxH = 28;
+  int boxW = 300;
+  int boxX = 10;
+  int textY = rowCenterY - 7;
+  int textX = 24;
 
-// ========= Pomodoro =========
-uint16_t pomoColorFromFrac(float f) {
-  if (f < 0.33f) return AQ_BAR_GREEN;
-  if (f < 0.66f) return AQ_BAR_YELLOW;
-  if (f < 0.85f) return AQ_BAR_ORANGE;
-  return AQ_BAR_RED;
-}
-
-void drawPomodoroRing(float progress) {
-  int cx = SCREEN_CX; 
-  int cy = SCREEN_CY; 
-  int rOuter = 100;   
-  int rInner = 80;    
-
-  const float startDeg = -225.0f;
-  const float endDeg   =   45.0f;
-  const float spanDeg  = endDeg - startDeg;   
-
-  for (float deg = startDeg; deg <= endDeg; deg += 3.0f) { 
-    float frac = (deg - startDeg) / spanDeg; 
-    uint16_t col = (frac <= progress) ? pomoColorFromFrac(frac) : CYBER_DARK;
-
-    float rad = deg * PI / 180.0f;
-    for(int i=0; i<3; i++) {
-        int xOuter = cx + cos(rad) * (rOuter+i);
-        int yOuter = cy + sin(rad) * (rOuter+i);
-        int xInner = cx + cos(rad) * (rInner-i);
-        int yInner = cy + sin(rad) * (rInner-i);
-        tft.drawLine(xInner, yInner, xOuter, yOuter, col);
-    }
+  if (selected) {
+    tft.fillRect(boxX, boxY, boxW, boxH, CYBER_ACCENT);
+    tft.setTextColor(CYBER_BG);
+    tft.setTextSize(2);
+    tft.setCursor(textX, textY);
+    tft.print(menuLabels[index]);
+  } else {
+    tft.fillRect(boxX, boxY, boxW, boxH, CYBER_BG);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(textX, textY);
+    tft.print(menuLabels[index]);
   }
 }
 
-void drawPomodoroScreen(bool forceStatic) {
-  bool needStatic = forceStatic;
-  if (prevPomoPreset != pomoPresetIndex || prevPomoStateInt != (int)pomoState) {
-    needStatic = true;
-    prevPomoPreset   = pomoPresetIndex;
-    prevPomoStateInt = (int)pomoState;
-  }
-
-  if (needStatic) {
+void drawMenu(bool fullRedraw) {
+  if (fullRedraw) {
     tft.fillScreen(CYBER_BG);
     drawAlarmIcon();
+    for (int i = 0; i < MENU_ITEMS; i++) {
+      drawMenuItem(i, (i == menuIndex));
+    }
+  }
+}
+
+// ========= Pomodoro (Wizard & Running) =========
+
+// 1. Wizard - Static Layout (RUN ONCE)
+void initPomodoroWizard(const char* title) {
+  tft.fillScreen(CYBER_BG);
+  
+  tft.setTextSize(2);
+  tft.setTextColor(CYBER_LIGHT, CYBER_BG);
+  int16_t x1, y1; uint16_t w, h;
+  tft.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+  tft.setCursor((SCREEN_WIDTH - w)/2, 40);
+  tft.print(title);
+  
+  // No unit text anymore, just the number will be drawn
+}
+
+// 2. Wizard - Value Update (RUN ON KNOB)
+void updatePomodoroValue(int value) {
+  if (value == prevPomoVal) return;
+  prevPomoVal = value;
+
+  // Clear ONLY the number area with a small box
+  // This prevents ghosting (10 -> 9) and flickering
+  int numY = 100;
+  int numH = 50; 
+  int numW = 100;
+  int startX = (SCREEN_WIDTH - numW) / 2;
+  
+  tft.fillRect(startX, numY, numW, numH, CYBER_BG);
+
+  tft.setTextSize(6);
+  tft.setTextColor(ST77XX_WHITE, CYBER_BG);
+  
+  String valStr = String(value);
+  int16_t x1, y1; uint16_t w, h;
+  tft.getTextBounds(valStr, 0, 0, &x1, &y1, &w, &h);
+  
+  tft.setCursor((SCREEN_WIDTH - w)/2, numY);
+  tft.print(valStr);
+}
+
+// 3. Bar Drawer
+void drawPomodoroBar(float progress) {
+  int barX = 20;
+  int barY = 225; 
+  int barW = 280;
+  int barH = 10;
+
+  if (prevBarWidth == -1) {
+    tft.drawRect(barX - 1, barY - 1, barW + 2, barH + 2, ST77XX_WHITE);
+    tft.fillRect(barX, barY, barW, barH, CYBER_DARK);
+    prevBarWidth = 0;
   }
 
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-  tft.fillRect(200, 0, 100, 30, CYBER_BG);
-  tft.setCursor(210, 8);
-  tft.printf("%2d min", pomoDurationsMin[pomoPresetIndex]);
+  int targetW = (int)(barW * progress);
+  
+  if (targetW != prevBarWidth) {
+    if (targetW > prevBarWidth) {
+      tft.fillRect(barX + prevBarWidth, barY, targetW - prevBarWidth, barH, CYBER_GREEN);
+    } else {
+      tft.fillRect(barX + targetW, barY, prevBarWidth - targetW, barH, CYBER_DARK);
+    }
+    prevBarWidth = targetW;
+  }
+}
 
-  unsigned long durationMs = pomoDurationsMin[pomoPresetIndex] * 60UL * 1000UL;
+// 4. Running Screen
+void drawPomodoroScreen(bool forceStatic) {
+  if (forceStatic) {
+    tft.fillScreen(CYBER_BG);
+    drawAlarmIcon();
+    
+    prevBarWidth = -1; 
+    
+    tft.setTextSize(2);
+    tft.setTextColor(CYBER_LIGHT, CYBER_BG);
+    const char* phaseStr = "";
+    if (pomoPhase == PHASE_WORK) phaseStr = "GET TO WORK!";
+    else if (pomoPhase == PHASE_SHORT) phaseStr = "SHORT BREAK";
+    else phaseStr = "LONG BREAK";
+    
+    int16_t x1, y1; uint16_t w, h;
+    tft.getTextBounds(phaseStr, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor((SCREEN_WIDTH - w)/2, 30);
+    tft.print(phaseStr);
+
+    char cycleBuf[20];
+    sprintf(cycleBuf, "Cycle: %d/%d", currentCycle, cfgCycles);
+    tft.getTextBounds(cycleBuf, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor((SCREEN_WIDTH - w)/2, 190);
+    tft.setTextColor(ST77XX_WHITE, CYBER_BG);
+    tft.print(cycleBuf);
+  }
+
   unsigned long elapsed = 0;
-  if (pomoState == POMO_RUNNING)      elapsed = millis() - pomoStartMillis;
-  else if (pomoState == POMO_PAUSED)  elapsed = pomoPausedMillis - pomoStartMillis;
-  else if (pomoState == POMO_DONE)    elapsed = durationMs;
-  if (elapsed > durationMs) elapsed = durationMs;
+  if (pomoState == POMO_RUNNING) elapsed = millis() - pomoStartMillis;
+  else if (pomoState == POMO_PAUSED) elapsed = pomoPausedMillis - pomoStartMillis;
+  
+  if (elapsed > currentDurationMs) elapsed = currentDurationMs;
 
-  float progress = (durationMs > 0) ? (float)elapsed / durationMs : 0.0f;
-  drawPomodoroRing(progress);
+  float progress = (currentDurationMs > 0) ? (float)elapsed / currentDurationMs : 0.0f;
+  drawPomodoroBar(progress);
 
-  int cx = SCREEN_CX;
-  int cy = SCREEN_CY;
-  tft.fillCircle(cx, cy, 70, CYBER_BG); 
-
-  unsigned long remain = durationMs - elapsed;
+  unsigned long remain = currentDurationMs - elapsed;
   uint16_t rmMin = remain / 60000UL;
   uint8_t  rmSec = (remain / 1000UL) % 60;
 
   char buf[8];
   sprintf(buf, "%02d:%02d", rmMin, rmSec);
 
-  int16_t x1, y1;
-  uint16_t w, h;
-  tft.setTextSize(5); 
+  tft.setTextSize(6); 
+  tft.setTextColor(ST77XX_WHITE, CYBER_BG); 
+  int16_t x1, y1; uint16_t w, h;
   tft.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(cx - w / 2, cy - 15);
-  tft.setTextColor(ST77XX_WHITE, CYBER_BG);
+  tft.setCursor((SCREEN_WIDTH - w)/2, 90);
   tft.print(buf);
-
-  tft.fillRect(0, 200, SCREEN_WIDTH, 40, CYBER_BG);
-  tft.setTextSize(2);
-  tft.setCursor(16, 205);
-  tft.setTextColor(CYBER_GREEN, CYBER_BG);
-  if (pomoState == POMO_PAUSED)      tft.print("Paused");
-  else if (pomoState == POMO_DONE)   tft.print("Completed");
 }
 
-// ========= Alarm UI (NO TITLE) =========
+// ========= Alarm UI =========
 void drawAlarmScreen(bool full) {
   if (full) {
     tft.fillScreen(CYBER_BG);
@@ -651,7 +706,7 @@ void updateAlertStateAndLED() {
   }
 }
 
-// ========= DVD screensaver (NO TITLE) =========
+// ========= DVD screensaver =========
 bool dvdInited = false;
 int  dvdX, dvdY;
 int  dvdVX = 2;
@@ -704,7 +759,7 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
   if (backPressed) {
     dvdInited = false;
     currentMode = MODE_MENU;
-    drawMenu();
+    drawMenu(true);
     return;
   }
 
@@ -768,22 +823,12 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  // Initialize History with Sample Wave Data for Testing (4 Lines)
+  // Initialize History
   for(int i=0; i<HISTORY_LEN; i++) {
-    float a1 = (float)i / HISTORY_LEN * 3.14159 * 2;
-    float a2 = (float)i / HISTORY_LEN * 3.14159 * 4;
-    
-    // Temp (0-50): sine from 20 to 30
-    histTemp[i] = (uint16_t)((25 + 5*sin(a1)) * 10);
-    
-    // Hum (0-100): cosine from 50 to 80
-    histHum[i]  = (uint16_t)(65 + 15*cos(a1 + 1));
-    
-    // TVOC (0-1000): fast wave 100-300
-    histTVOC[i] = (uint16_t)(200 + 100*sin(a2));
-    
-    // CO2 (400-3000): slow wave 600-1200
-    histCO2[i]  = (uint16_t)(900 + 300*cos(a1));
+    histTemp[i] = 0;
+    histHum[i]  = 0;
+    histTVOC[i] = 0;
+    histCO2[i]  = 400; 
   }
   historyHead = 0; 
 
@@ -837,10 +882,13 @@ void loop() {
   switch (currentMode) {
     case MODE_MENU: {
       if (encStep != 0) {
+        int prevMenuIndex = menuIndex;
         menuIndex += encStep;
         if (menuIndex < 0) menuIndex = MENU_ITEMS - 1;
         if (menuIndex >= MENU_ITEMS) menuIndex = 0;
-        drawMenu();
+        
+        drawMenuItem(prevMenuIndex, false);
+        drawMenuItem(menuIndex, true);
       }
       if (encPressed) {
         if (menuIndex == 0) {
@@ -852,11 +900,10 @@ void loop() {
           drawEnvDynamic(curTemp, curHum, curTVOC, curECO2);
         } else if (menuIndex == 1) {
           currentMode = MODE_POMODORO;
-          pomoState = POMO_SELECT;
-          prevPomoRemainSec = -1;
-          prevPomoPreset = -1;
-          prevPomoStateInt = -1;
-          drawPomodoroScreen(true);
+          pomoState = POMO_SET_WORK;
+          prevPomoVal = -1;
+          initPomodoroWizard("Set Work");
+          updatePomodoroValue(cfgWorkMin);
         } else if (menuIndex == 2) {
           currentMode = MODE_ALARM;
           alarmSelectedField = 0;
@@ -867,7 +914,6 @@ void loop() {
         } 
       }
       
-      // Cancel menu with K0
       if (k0Pressed) {
         currentMode = MODE_CLOCK;
         initClockStaticUI();
@@ -896,65 +942,132 @@ void loop() {
       }
       if (k0Pressed) {
         currentMode = MODE_MENU;
-        drawMenu();
+        drawMenu(true); 
       }
       break;
     }
 
+    // --- POMODORO WIZARD LOGIC ---
     case MODE_POMODORO: {
-      if (pomoState == POMO_SELECT && encStep != 0) {
-        pomoPresetIndex += encStep;
-        if (pomoPresetIndex < 0) pomoPresetIndex = 2;
-        if (pomoPresetIndex > 2) pomoPresetIndex = 0;
-        prevPomoRemainSec = -1;
-        drawPomodoroScreen(true);
+      if (pomoState == POMO_SET_WORK) {
+        if (encStep != 0) {
+          cfgWorkMin += encStep;
+          if (cfgWorkMin < 1) cfgWorkMin = 1;
+          if (cfgWorkMin > 90) cfgWorkMin = 90;
+          updatePomodoroValue(cfgWorkMin);
+        }
+        if (encPressed) {
+          pomoState = POMO_SET_SHORT;
+          prevPomoVal = -1;
+          initPomodoroWizard("Short Break");
+          updatePomodoroValue(cfgShortMin);
+        }
+      } 
+      else if (pomoState == POMO_SET_SHORT) {
+        if (encStep != 0) {
+          cfgShortMin += encStep;
+          if (cfgShortMin < 1) cfgShortMin = 1;
+          if (cfgShortMin > 30) cfgShortMin = 30;
+          updatePomodoroValue(cfgShortMin);
+        }
+        if (encPressed) {
+          pomoState = POMO_SET_LONG;
+          prevPomoVal = -1;
+          initPomodoroWizard("Long Break");
+          updatePomodoroValue(cfgLongMin);
+        }
       }
-
-      if (encPressed) {
-        if (pomoState == POMO_SELECT || pomoState == POMO_DONE) {
+      else if (pomoState == POMO_SET_LONG) {
+        if (encStep != 0) {
+          cfgLongMin += encStep;
+          if (cfgLongMin < 1) cfgLongMin = 1;
+          if (cfgLongMin > 60) cfgLongMin = 60;
+          updatePomodoroValue(cfgLongMin);
+        }
+        if (encPressed) {
+          pomoState = POMO_SET_CYCLES;
+          prevPomoVal = -1;
+          initPomodoroWizard("Set Cycles");
+          updatePomodoroValue(cfgCycles);
+        }
+      }
+      else if (pomoState == POMO_SET_CYCLES) {
+        if (encStep != 0) {
+          cfgCycles += encStep;
+          if (cfgCycles < 1) cfgCycles = 1;
+          if (cfgCycles > 10) cfgCycles = 10;
+          updatePomodoroValue(cfgCycles);
+        }
+        if (encPressed) {
+          // Initialize Running State
           pomoState = POMO_RUNNING;
+          pomoPhase = PHASE_WORK;
+          currentCycle = 1;
+          currentDurationMs = cfgWorkMin * 60UL * 1000UL;
           pomoStartMillis = millis();
-          prevPomoRemainSec = -1;
-          drawPomodoroScreen(true);
-        } else if (pomoState == POMO_RUNNING) {
-          pomoState = POMO_PAUSED;
-          pomoPausedMillis = millis();
-          drawPomodoroScreen(true);
-        } else if (pomoState == POMO_PAUSED) {
-          unsigned long pauseDur = millis() - pomoPausedMillis;
-          pomoStartMillis += pauseDur;
-          pomoState = POMO_RUNNING;
-          prevPomoRemainSec = -1;
           drawPomodoroScreen(true);
         }
       }
-
-      if (pomoState == POMO_RUNNING || pomoState == POMO_PAUSED || pomoState == POMO_DONE) {
-        unsigned long durationMs = pomoDurationsMin[pomoPresetIndex] * 60UL * 1000UL;
-        unsigned long elapsed = 0;
-        if (pomoState == POMO_RUNNING) elapsed = millis() - pomoStartMillis;
-        else if (pomoState == POMO_PAUSED) elapsed = pomoPausedMillis - pomoStartMillis;
-        else if (pomoState == POMO_DONE) elapsed = durationMs;
-
-        if (elapsed > durationMs) {
-          elapsed = durationMs;
-          if (pomoState != POMO_DONE) {
-            pomoState = POMO_DONE;
-            tone(BUZZ_PIN, 2000, 500);
+      else if (pomoState == POMO_RUNNING || pomoState == POMO_PAUSED) {
+        if (encPressed) {
+          if (pomoState == POMO_RUNNING) {
+            pomoState = POMO_PAUSED;
+            pomoPausedMillis = millis();
+            drawPomodoroScreen(true);
+          } else {
+            unsigned long pausedDur = millis() - pomoPausedMillis;
+            pomoStartMillis += pausedDur;
+            pomoState = POMO_RUNNING;
             drawPomodoroScreen(true);
           }
         }
 
-        int remainSec = (durationMs - elapsed) / 1000UL;
-        if (remainSec != prevPomoRemainSec) {
-          prevPomoRemainSec = remainSec;
-          drawPomodoroScreen(false);
+        if (pomoState == POMO_RUNNING) {
+          unsigned long elapsed = millis() - pomoStartMillis;
+          
+          if (elapsed >= currentDurationMs) {
+            // PHASE COMPLETE ALARM (3 seconds + LED)
+            digitalWrite(LED_PIN, HIGH);
+            tone(BUZZ_PIN, 2000); 
+            delay(3000);
+            noTone(BUZZ_PIN);
+            digitalWrite(LED_PIN, LOW);
+
+            if (pomoPhase == PHASE_WORK) {
+              if (currentCycle < cfgCycles) {
+                pomoPhase = PHASE_SHORT;
+                currentDurationMs = cfgShortMin * 60UL * 1000UL;
+              } else {
+                pomoPhase = PHASE_LONG;
+                currentDurationMs = cfgLongMin * 60UL * 1000UL;
+              }
+            } else if (pomoPhase == PHASE_SHORT) {
+              pomoPhase = PHASE_WORK;
+              currentCycle++;
+              currentDurationMs = cfgWorkMin * 60UL * 1000UL;
+            } else if (pomoPhase == PHASE_LONG) {
+              pomoState = POMO_DONE;
+              drawPomodoroScreen(true);
+            }
+            pomoStartMillis = millis();
+            if (pomoState != POMO_DONE) drawPomodoroScreen(true);
+          } else {
+             drawPomodoroScreen(false);
+          }
+        }
+      }
+      else if (pomoState == POMO_DONE) {
+        if (encPressed) {
+           pomoState = POMO_SET_WORK;
+           prevPomoVal = -1;
+           initPomodoroWizard("Set Work");
+           updatePomodoroValue(cfgWorkMin);
         }
       }
 
       if (k0Pressed) {
         currentMode = MODE_MENU;
-        drawMenu();
+        drawMenu(true);
       }
       break;
     }
@@ -1002,7 +1115,7 @@ void loop() {
 
       if (k0Pressed) {
         currentMode = MODE_MENU;
-        drawMenu();
+        drawMenu(true);
         break;
       }
 
