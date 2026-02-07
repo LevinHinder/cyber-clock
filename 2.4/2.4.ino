@@ -5,6 +5,7 @@
 #include <Adafruit_ST7789.h> 
 #include <Adafruit_AHTX0.h>
 #include <ScioSense_ENS160.h>
+#include <Preferences.h> // Include Preferences Library
 #include "time.h"
 
 const char* ssid = "Hinder WLAN";
@@ -28,10 +29,6 @@ const char* time_zone = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 #define LED_PIN 4
 #define BUZZ_PIN 3
-
-// PWM CHANNELS
-#define LED_PWM_CHAN  0
-#define BUZZ_PWM_CHAN 1
 
 #define SCREEN_WIDTH  320
 #define SCREEN_HEIGHT 240
@@ -61,16 +58,21 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 GFXcanvas16 graphCanvas(320, 90);
 Adafruit_AHTX0 aht;
 ScioSense_ENS160 ens160(0x53);
+Preferences prefs; // Create Preferences object
 
-// --- Settings Globals ---
-int settingLedBrightness = 255; // 0 to 255
-int settingSpeakerVol = 100;    // 0 to 100 (Mapped to PWM duty)
+// --- Settings Globals (Default values, will be overwritten by loadSettings) ---
+int settingLedBrightness = 100; 
+int settingSpeakerVol = 100;    
+
+// Used to track bar drawing to avoid flicker
+int prevLedBarW = -1;
+int prevSpkBarW = -1;
 
 enum UIMode { MODE_MENU = 0, MODE_CLOCK, MODE_POMODORO, MODE_ALARM, MODE_DVD, MODE_SETTINGS };
 UIMode currentMode = MODE_CLOCK;      
 
 int menuIndex = 0;
-const int MENU_ITEMS = 5; // Added Settings
+const int MENU_ITEMS = 5; 
 const char* menuLabels[MENU_ITEMS] = { "Monitor", "Pomodoro", "Alarm", "DVD", "Settings" };
 
 enum PomodoroState { POMO_SET_WORK = 0, POMO_SET_SHORT, POMO_SET_LONG, POMO_SET_CYCLES, POMO_READY, POMO_RUNNING, POMO_PAUSED, POMO_DONE };
@@ -123,8 +125,7 @@ int alarmSelectedField = 0;
 int lastAlarmDayTriggered = -1;
 
 // Settings Logic
-int settingsSelectedRow = 0;
-bool settingsIsEditing = false;
+int settingsSelectedRow = 0; // 0 = LED, 1 = Speaker
 
 enum AlertLevel { ALERT_NONE = 0, ALERT_CO2, ALERT_ALARM };
 AlertLevel currentAlertLevel = ALERT_NONE;
@@ -162,37 +163,70 @@ void drawAlarmScreen(bool full);
 void drawAlarmRingingScreen();
 void drawSettingsScreen(bool full);
 
-// --- HELPER: SYSTEM TONE (Replaces standard tone) ---
-// Plays a tone respecting the global volume setting
+// --- PERSISTENCE HELPERS ---
+void loadSettings() {
+  prefs.begin("cyber", true); // Open in read-only mode
+  settingLedBrightness = prefs.getInt("led_b", 100);
+  settingSpeakerVol = prefs.getInt("spk_v", 100);
+  
+  alarmHour = prefs.getInt("alm_h", 7);
+  alarmMinute = prefs.getInt("alm_m", 0);
+  alarmEnabled = prefs.getBool("alm_e", false);
+  
+  cfgWorkMin = prefs.getInt("p_work", 25);
+  cfgShortMin = prefs.getInt("p_short", 5);
+  cfgLongMin = prefs.getInt("p_long", 15);
+  cfgCycles = prefs.getInt("p_cycl", 4);
+  prefs.end();
+}
+
+void saveSettings() {
+  prefs.begin("cyber", false); // Open in read-write mode
+  prefs.putInt("led_b", settingLedBrightness);
+  prefs.putInt("spk_v", settingSpeakerVol);
+  
+  prefs.putInt("alm_h", alarmHour);
+  prefs.putInt("alm_m", alarmMinute);
+  prefs.putBool("alm_e", alarmEnabled);
+  
+  prefs.putInt("p_work", cfgWorkMin);
+  prefs.putInt("p_short", cfgShortMin);
+  prefs.putInt("p_long", cfgLongMin);
+  prefs.putInt("p_cycl", cfgCycles);
+  prefs.end();
+}
+
+// --- HELPER: SYSTEM TONE (FIXED FOR ESP32 v3.0) ---
 void playSystemTone(unsigned int frequency, unsigned long durationMs = 0) {
   if (settingSpeakerVol == 0) {
-     ledcWrite(BUZZ_PWM_CHAN, 0);
+     ledcWrite(BUZZ_PIN, 0);
      return;
   }
   
-  ledcSetup(BUZZ_PWM_CHAN, frequency, 8);
-  ledcAttachPin(BUZZ_PIN, BUZZ_PWM_CHAN);
+  ledcAttach(BUZZ_PIN, frequency, 8);
   
-  // Volume mapping: 0-100% -> 0-128 (approx 50% duty cycle is max volume for square wave)
+  // Map 0-100% volume to 0-128 PWM duty
   int duty = map(settingSpeakerVol, 0, 100, 0, 128);
-  ledcWrite(BUZZ_PWM_CHAN, duty);
+  ledcWrite(BUZZ_PIN, duty);
 
   if (durationMs > 0) {
     delay(durationMs);
-    ledcWrite(BUZZ_PWM_CHAN, 0);
+    ledcWrite(BUZZ_PIN, 0);
   }
 }
 
 void stopSystemTone() {
-  ledcWrite(BUZZ_PWM_CHAN, 0);
+  ledcWrite(BUZZ_PIN, 0);
 }
 
-// --- HELPER: LED CONTROL ---
+// --- HELPER: LED CONTROL (FIXED FOR ESP32 v3.0) ---
 void setLedState(bool on) {
   if (on) {
-    ledcWrite(LED_PWM_CHAN, settingLedBrightness);
+    // Map 0-100% brightness to 0-255 PWM duty
+    int duty = map(settingLedBrightness, 0, 100, 0, 255);
+    ledcWrite(LED_PIN, duty);
   } else {
-    ledcWrite(LED_PWM_CHAN, 0);
+    ledcWrite(LED_PIN, 0);
   }
 }
 
@@ -414,7 +448,7 @@ void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
 
 void drawMenuItem(int index, bool selected) {
   if (index < 0 || index >= MENU_ITEMS) return;
-  int rowCenterY = 60 + index * 35; // slightly tighter spacing to fit 5 items
+  int rowCenterY = 60 + index * 35; 
   int boxY = rowCenterY - 14;
   int boxH = 28;
   int boxW = 300;
@@ -588,45 +622,55 @@ void drawAlarmRingingScreen() {
   tft.print("ALARM!");
 }
 
-// --- SETTINGS DRAWING ---
+// --- UPDATED SETTINGS DRAWING ---
+void drawBarItem(int x, int y, int w, int h, int value, int &prevW) {
+    tft.drawRect(x - 1, y - 1, w + 2, h + 2, ST77XX_WHITE);
+    
+    if (prevW == -1) {
+        tft.fillRect(x, y, w, h, CYBER_DARK);
+        prevW = 0;
+    }
+
+    int targetW = (int)((float)w * (value / 100.0f));
+    
+    if (targetW != prevW) {
+        if (targetW > prevW) {
+             tft.fillRect(x + prevW, y, targetW - prevW, h, CYBER_GREEN);
+        } else {
+             tft.fillRect(x + targetW, y, prevW - targetW, h, CYBER_DARK);
+        }
+        prevW = targetW;
+    }
+}
+
 void drawSettingsScreen(bool full) {
   if (full) {
     tft.fillScreen(CYBER_BG);
     drawAlarmIcon();
-    tft.setTextSize(3);
-    tft.setTextColor(CYBER_LIGHT, CYBER_BG);
-    tft.setCursor(80, 20);
-    tft.print("SETTINGS");
+    prevLedBarW = -1;
+    prevSpkBarW = -1;
   }
 
-  // Row 1: LED Brightness
-  int row1Y = 80;
-  if (settingsSelectedRow == 0) {
-    tft.fillRoundRect(10, row1Y-5, 300, 50, 4, settingsIsEditing ? CYBER_ACCENT : CYBER_DARK);
-    tft.setTextColor(ST77XX_WHITE, settingsIsEditing ? CYBER_ACCENT : CYBER_DARK);
-  } else {
-    tft.fillRoundRect(10, row1Y-5, 300, 50, 4, CYBER_BG);
-    tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-  }
+  int barX = 40;
+  int barW = 240;
+  int barH = 15;
+  
+  // LED Section
+  int yLed = 80;
   tft.setTextSize(2);
-  tft.setCursor(20, row1Y + 10);
-  tft.print("LED Bright: ");
-  tft.print(settingLedBrightness);
+  tft.setTextColor(settingsSelectedRow == 0 ? CYBER_ACCENT : ST77XX_WHITE, CYBER_BG);
+  tft.setCursor(barX, yLed - 20);
+  tft.print("LED Brightness");
+  
+  drawBarItem(barX, yLed, barW, barH, settingLedBrightness, prevLedBarW);
 
-  // Row 2: Speaker Volume
-  int row2Y = 150;
-  if (settingsSelectedRow == 1) {
-    tft.fillRoundRect(10, row2Y-5, 300, 50, 4, settingsIsEditing ? CYBER_ACCENT : CYBER_DARK);
-    tft.setTextColor(ST77XX_WHITE, settingsIsEditing ? CYBER_ACCENT : CYBER_DARK);
-  } else {
-    tft.fillRoundRect(10, row2Y-5, 300, 50, 4, CYBER_BG);
-    tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-  }
-  tft.setTextSize(2);
-  tft.setCursor(20, row2Y + 10);
-  tft.print("Speaker Vol: ");
-  tft.print(settingSpeakerVol);
-  tft.print("%");
+  // Speaker Section
+  int ySpk = 160;
+  tft.setTextColor(settingsSelectedRow == 1 ? CYBER_ACCENT : ST77XX_WHITE, CYBER_BG);
+  tft.setCursor(barX, ySpk - 20);
+  tft.print("Speaker Volume");
+  
+  drawBarItem(barX, ySpk, barW, barH, settingSpeakerVol, prevSpkBarW);
 }
 
 void checkAlarmTrigger() {
@@ -649,7 +693,10 @@ void updateAlertStateAndLED() {
 
   unsigned long now = millis();
   if (currentAlertLevel == ALERT_NONE) {
-    setLedState(false);
+    // Only turn off if not in settings menu (to allow preview)
+    if (currentMode != MODE_SETTINGS) {
+        setLedState(false);
+    }
     ledState = false; 
   } else {
     unsigned long interval;
@@ -666,7 +713,7 @@ void updateAlertStateAndLED() {
     if (now - lastCo2BlinkMs > 350) {
       lastCo2BlinkMs = now;
       co2BlinkOn = !co2BlinkOn;
-      playSystemTone(1800, 80); // Replaced tone()
+      playSystemTone(1800, 80); 
     }
   }
 }
@@ -726,7 +773,7 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
 
   if (hitX && hitY) {
     dvdColorIndex = (dvdColorIndex + 1) % (sizeof(dvdColors) / sizeof(dvdColors[0]));
-    playSystemTone(1500, 80); // Replaced tone()
+    playSystemTone(1500, 80); 
   }
   drawDvdLogo(dvdX, dvdY, dvdColors[dvdColorIndex]);
 }
@@ -763,8 +810,8 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
             dvdInited = false;
         } else if (menuIndex == 4) {
             currentMode = MODE_SETTINGS;
-            settingsSelectedRow = 0;
-            settingsIsEditing = false;
+            settingsSelectedRow = 0; // Default to first item (LED)
+            setLedState(true);       // Turn on LED for preview
             drawSettingsScreen(true);
         }
     }
@@ -898,6 +945,7 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
     }
 
     if (k0Pressed) {
+        saveSettings(); // Save pomodoro settings on exit
         currentMode = MODE_MENU;
         drawMenu(true);
     }
@@ -908,7 +956,7 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
         static unsigned long lastBeep = 0;
         if (millis() - lastBeep > 1000) {
             lastBeep = millis();
-            playSystemTone(2000, 400); // Replaced tone()
+            playSystemTone(2000, 400); 
         }
         if (encPressed || k0Pressed) {
             alarmRinging = false;
@@ -938,6 +986,7 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
         changed = true;
     }
     if (k0Pressed) {
+        saveSettings(); // Save alarm settings on exit
         currentMode = MODE_MENU;
         drawMenu(true);
         return;
@@ -948,55 +997,46 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
     }
 }
 
-// --- SETTINGS LOGIC ---
+// --- UPDATED SETTINGS LOGIC ---
 void runSettings(int encStep, bool encPressed, bool k0Pressed) {
     if (k0Pressed) {
-        settingsIsEditing = false;
+        saveSettings(); // Save global settings on exit
+        if (currentAlertLevel == ALERT_NONE) setLedState(false);
         currentMode = MODE_MENU;
         drawMenu(true);
         return;
     }
 
-    if (!settingsIsEditing) {
-        // Navigation Mode
-        if (encStep != 0) {
-            settingsSelectedRow = (settingsSelectedRow + encStep);
-            if (settingsSelectedRow < 0) settingsSelectedRow = 1;
-            if (settingsSelectedRow > 1) settingsSelectedRow = 0;
-            drawSettingsScreen(false);
+    // Toggle Selection on Click
+    if (encPressed) {
+        settingsSelectedRow = !settingsSelectedRow; // Toggle 0 <-> 1
+        
+        // Only keep LED on if we selected the LED row
+        if (settingsSelectedRow == 0) {
+             setLedState(true);
+        } else {
+             setLedState(false);
         }
-        if (encPressed) {
-            settingsIsEditing = true;
-            drawSettingsScreen(false);
+        
+        drawSettingsScreen(false); // Redraw to update selection highlight
+    }
+
+    // Adjust Value on Rotation
+    if (encStep != 0) {
+        if (settingsSelectedRow == 0) {
+            // Adjust LED Brightness (5% steps)
+            settingLedBrightness = constrain(settingLedBrightness + (encStep * 5), 0, 100);
+            
+            // FEEDBACK: DIRECT LED UPDATE
+            setLedState(true); 
+        } else {
+            // Adjust Speaker Volume (5% steps)
+            settingSpeakerVol = constrain(settingSpeakerVol + (encStep * 5), 0, 100);
+            
+            // FEEDBACK: DIRECT SOUND BEEP
+            playSystemTone(2000, 50); 
         }
-    } else {
-        // Edit Mode
-        if (encStep != 0) {
-            if (settingsSelectedRow == 0) {
-                // Adjust LED Brightness (increment by 15 for faster scrolling)
-                settingLedBrightness = constrain(settingLedBrightness + (encStep * 15), 0, 255);
-                
-                // --- FEEDBACK: DIRECT LED UPDATE ---
-                // Temporarily force LED on to see brightness
-                ledcWrite(LED_PWM_CHAN, settingLedBrightness);
-                // Note: If you leave this menu, the Alert system will overwrite this, 
-                // but while scrolling here, you see the result.
-            } else {
-                // Adjust Speaker Volume
-                settingSpeakerVol = constrain(settingSpeakerVol + (encStep * 5), 0, 100);
-                
-                // --- FEEDBACK: DIRECT SOUND BEEP ---
-                playSystemTone(2000, 50); // Short blip to hear volume
-            }
-            drawSettingsScreen(false);
-        }
-        if (encPressed) {
-            // Confirm selection
-            settingsIsEditing = false;
-            // Ensure LED is off if not alerting
-            if (currentAlertLevel == ALERT_NONE) setLedState(false); 
-            drawSettingsScreen(false);
-        }
+        drawSettingsScreen(false); // Update bars
     }
 }
 
@@ -1004,23 +1044,24 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
+  // Initialize History
   for(int i=0; i<HISTORY_LEN; i++) {
     histTemp[i] = 0; histHum[i] = 0; histTVOC[i] = 0; histCO2[i] = 400; 
   }
   historyHead = 0; 
 
+  // Initialize Pins
   pinMode(ENC_A_PIN,   INPUT_PULLUP);
   pinMode(ENC_B_PIN,   INPUT_PULLUP);
   pinMode(ENC_BTN_PIN, INPUT_PULLUP);
   pinMode(KEY0_PIN,    INPUT_PULLUP);
   
-  // --- REPLACED PINMODE WITH LEDC SETUP ---
-  // Channel 0 for LED, Channel 1 for Buzzer
-  ledcSetup(LED_PWM_CHAN, 5000, 8); // 5kHz, 8-bit resolution
-  ledcAttachPin(LED_PIN, LED_PWM_CHAN);
-  
-  ledcSetup(BUZZ_PWM_CHAN, 2000, 8); // 2kHz init, 8-bit
-  ledcAttachPin(BUZZ_PIN, BUZZ_PWM_CHAN);
+  // Attach PWM for LED and Buzzer
+  ledcAttach(LED_PIN, 5000, 8);  // 5kHz, 8-bit
+  ledcAttach(BUZZ_PIN, 2000, 8); // 2kHz, 8-bit
+
+  // Initialize Settings
+  loadSettings();
 
   Wire.begin(SDA_PIN, SCL_PIN);
   SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS); 
