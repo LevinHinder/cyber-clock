@@ -5,7 +5,7 @@
 #include <Adafruit_ST7789.h> 
 #include <Adafruit_AHTX0.h>
 #include <ScioSense_ENS160.h>
-#include <Preferences.h> // Include Preferences Library
+#include <Preferences.h> 
 #include "time.h"
 
 const char* ssid = "Hinder WLAN";
@@ -58,13 +58,12 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 GFXcanvas16 graphCanvas(320, 90);
 Adafruit_AHTX0 aht;
 ScioSense_ENS160 ens160(0x53);
-Preferences prefs; // Create Preferences object
+Preferences prefs; 
 
-// --- Settings Globals (Default values, will be overwritten by loadSettings) ---
+// --- Settings Globals ---
 int settingLedBrightness = 100; 
 int settingSpeakerVol = 100;    
 
-// Used to track bar drawing to avoid flicker
 int prevLedBarW = -1;
 int prevSpkBarW = -1;
 
@@ -92,6 +91,7 @@ unsigned long pomoPausedMillis = 0;
 unsigned long currentDurationMs = 0;
 int prevPomoVal = -1; 
 int prevBarWidth = -1; 
+String prevPomoLabel = ""; // To track label changes
 
 float curTemp = 0;
 float curHum = 0;
@@ -165,7 +165,7 @@ void drawSettingsScreen(bool full);
 
 // --- PERSISTENCE HELPERS ---
 void loadSettings() {
-  prefs.begin("cyber", true); // Open in read-only mode
+  prefs.begin("cyber", true); 
   settingLedBrightness = prefs.getInt("led_b", 100);
   settingSpeakerVol = prefs.getInt("spk_v", 100);
   
@@ -181,7 +181,7 @@ void loadSettings() {
 }
 
 void saveSettings() {
-  prefs.begin("cyber", false); // Open in read-write mode
+  prefs.begin("cyber", false); 
   prefs.putInt("led_b", settingLedBrightness);
   prefs.putInt("spk_v", settingSpeakerVol);
   
@@ -196,19 +196,15 @@ void saveSettings() {
   prefs.end();
 }
 
-// --- HELPER: SYSTEM TONE (FIXED FOR ESP32 v3.0) ---
+// --- HELPER: SYSTEM TONE ---
 void playSystemTone(unsigned int frequency, unsigned long durationMs = 0) {
   if (settingSpeakerVol == 0) {
      ledcWrite(BUZZ_PIN, 0);
      return;
   }
-  
   ledcAttach(BUZZ_PIN, frequency, 8);
-  
-  // Map 0-100% volume to 0-128 PWM duty
   int duty = map(settingSpeakerVol, 0, 100, 0, 128);
   ledcWrite(BUZZ_PIN, duty);
-
   if (durationMs > 0) {
     delay(durationMs);
     ledcWrite(BUZZ_PIN, 0);
@@ -219,10 +215,9 @@ void stopSystemTone() {
   ledcWrite(BUZZ_PIN, 0);
 }
 
-// --- HELPER: LED CONTROL (FIXED FOR ESP32 v3.0) ---
+// --- HELPER: LED CONTROL ---
 void setLedState(bool on) {
   if (on) {
-    // Map 0-100% brightness to 0-255 PWM duty
     int duty = map(settingLedBrightness, 0, 100, 0, 255);
     ledcWrite(LED_PIN, duty);
   } else {
@@ -533,30 +528,60 @@ void drawPomodoroBar(float progress) {
 }
 
 void drawPomodoroScreen(bool forceStatic) {
+  // If forcing a static redraw, clear screen and reset trackers
   if (forceStatic) {
     tft.fillScreen(CYBER_BG);
     drawAlarmIcon();
     prevBarWidth = -1; 
-    tft.setTextSize(2);
-    tft.setTextColor(CYBER_LIGHT, CYBER_BG);
-    const char* phaseStr = "";
-    if (pomoPhase == PHASE_WORK) phaseStr = "GET TO WORK!";
-    else if (pomoPhase == PHASE_SHORT) phaseStr = "SHORT BREAK";
-    else phaseStr = "LONG BREAK";
+    prevPomoLabel = "";
+    prevTimeStr = ""; // Force time redraw
     
-    int16_t x1, y1; uint16_t w, h;
-    tft.getTextBounds(phaseStr, 0, 0, &x1, &y1, &w, &h);
-    tft.setCursor((SCREEN_WIDTH - w)/2, 30);
-    tft.print(phaseStr);
-
     char cycleBuf[20];
     sprintf(cycleBuf, "Cycle: %d/%d", currentCycle, cfgCycles);
+    tft.setTextSize(2);
+    tft.setTextColor(ST77XX_WHITE, CYBER_BG);
+    int16_t x1, y1; uint16_t w, h;
     tft.getTextBounds(cycleBuf, 0, 0, &x1, &y1, &w, &h);
     tft.setCursor((SCREEN_WIDTH - w)/2, 190);
-    tft.setTextColor(ST77XX_WHITE, CYBER_BG);
     tft.print(cycleBuf);
   }
 
+  // --- 1. HANDLE STATUS LABEL (NO FLICKER) ---
+  String labelStr = "";
+  uint16_t labelColor = CYBER_LIGHT;
+
+  if (pomoState == POMO_PAUSED) {
+    labelStr = "[ PAUSED ]";
+    labelColor = ST77XX_YELLOW;
+  } else {
+    if (pomoPhase == PHASE_WORK) {
+      labelStr = "GET TO WORK!";
+      labelColor = CYBER_ACCENT;
+    } else if (pomoPhase == PHASE_SHORT) {
+      labelStr = "SHORT BREAK";
+      labelColor = CYBER_GREEN;
+    } else {
+      labelStr = "LONG BREAK";
+      labelColor = CYBER_BLUE;
+    }
+  }
+
+  if (labelStr != prevPomoLabel) {
+    // Clear the specific area where the text goes
+    // Assuming max width ~200px, height ~20px centered at Y=30
+    tft.fillRect(0, 30, SCREEN_WIDTH, 20, CYBER_BG); 
+    
+    tft.setTextSize(2);
+    tft.setTextColor(labelColor, CYBER_BG);
+    int16_t x1, y1; uint16_t w, h;
+    tft.getTextBounds(labelStr, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor((SCREEN_WIDTH - w)/2, 30);
+    tft.print(labelStr);
+    
+    prevPomoLabel = labelStr;
+  }
+
+  // --- 2. CALCULATE TIME & PROGRESS ---
   unsigned long elapsed = 0;
   if (pomoState == POMO_RUNNING) elapsed = millis() - pomoStartMillis;
   else if (pomoState == POMO_PAUSED) elapsed = pomoPausedMillis - pomoStartMillis;
@@ -571,12 +596,39 @@ void drawPomodoroScreen(bool forceStatic) {
   char buf[8];
   sprintf(buf, "%02d:%02d", rmMin, rmSec);
 
-  tft.setTextSize(6); 
-  tft.setTextColor(ST77XX_WHITE, CYBER_BG); 
-  int16_t x1, y1; uint16_t w, h;
-  tft.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor((SCREEN_WIDTH - w)/2, 90);
-  tft.print(buf);
+  // --- 3. DRAW TIMER (Only if changed) ---
+  String timeStr = String(buf);
+  // Also force redraw if state changed (to change color)
+  bool stateChanged = (pomoState == POMO_PAUSED && prevTimeStr.indexOf(":") != -1) || 
+                      (pomoState == POMO_RUNNING && prevTimeStr.indexOf(":") != -1);
+
+  // Determine Timer Color
+  uint16_t timeColor = (pomoState == POMO_PAUSED) ? CYBER_LIGHT : ST77XX_WHITE;
+
+  // We check prevTimeStr to avoid redrawing every loop, but we also check
+  // if we need to repaint because the color changed (pause <-> run).
+  // Note: prevTimeStr tracks the *text*, not color. So we might need to force it.
+  // Ideally, use a separate 'prevTimeColor'. For now, we rely on the loop.
+  
+  // Actually, standard GFX setTextColor(FG, BG) handles overwrite if BG is set.
+  // We just need to ensure we print if text OR color changes.
+  
+  static uint16_t prevTimeColor = 0;
+  
+  if (timeStr != prevTimeStr || timeColor != prevTimeColor) {
+     tft.setTextSize(6); 
+     tft.setTextColor(timeColor, CYBER_BG); 
+     int16_t x1, y1; uint16_t w, h;
+     tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+     // We fillRect the timer area to be safe against different character widths (e.g. 1 vs 7)
+     // 60x50 area centered at 90
+     // tft.fillRect(40, 90, 240, 50, CYBER_BG); // Optional, helps if font is proportional
+     tft.setCursor((SCREEN_WIDTH - w)/2, 90);
+     tft.print(timeStr);
+     
+     prevTimeStr = timeStr;
+     prevTimeColor = timeColor;
+  }
 }
 
 void drawAlarmScreen(bool full) {
@@ -693,7 +745,6 @@ void updateAlertStateAndLED() {
 
   unsigned long now = millis();
   if (currentAlertLevel == ALERT_NONE) {
-    // Only turn off if not in settings menu (to allow preview)
     if (currentMode != MODE_SETTINGS) {
         setLedState(false);
     }
@@ -810,8 +861,8 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
             dvdInited = false;
         } else if (menuIndex == 4) {
             currentMode = MODE_SETTINGS;
-            settingsSelectedRow = 0; // Default to first item (LED)
-            setLedState(true);       // Turn on LED for preview
+            settingsSelectedRow = 0; 
+            setLedState(true);       
             drawSettingsScreen(true);
         }
     }
@@ -897,18 +948,19 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
             if (pomoState == POMO_RUNNING) {
                 pomoState = POMO_PAUSED;
                 pomoPausedMillis = millis();
-                drawPomodoroScreen(true);
+                // NO FULL REDRAW HERE - Flicker Fix
+                // Just let the next loop handle the state change visuals
             } else {
                 pomoStartMillis += (millis() - pomoPausedMillis);
                 pomoState = POMO_RUNNING;
-                drawPomodoroScreen(true);
+                // NO FULL REDRAW HERE either
             }
         }
         if (pomoState == POMO_RUNNING) {
             unsigned long elapsed = millis() - pomoStartMillis;
             if (elapsed >= currentDurationMs) {
                 setLedState(true);
-                playSystemTone(2000, 0); // Start tone
+                playSystemTone(2000, 0); 
                 delay(3000);
                 stopSystemTone();
                 setLedState(false);
@@ -934,6 +986,9 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
             } else {
                 drawPomodoroScreen(false);
             }
+        } else if (pomoState == POMO_PAUSED) {
+             // Continue drawing screen (for label update) but time won't advance
+             drawPomodoroScreen(false);
         }
     } else if (pomoState == POMO_DONE) {
         if (encPressed) {
@@ -945,7 +1000,7 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
     }
 
     if (k0Pressed) {
-        saveSettings(); // Save pomodoro settings on exit
+        saveSettings(); 
         currentMode = MODE_MENU;
         drawMenu(true);
     }
@@ -986,7 +1041,7 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
         changed = true;
     }
     if (k0Pressed) {
-        saveSettings(); // Save alarm settings on exit
+        saveSettings(); 
         currentMode = MODE_MENU;
         drawMenu(true);
         return;
@@ -1000,43 +1055,32 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
 // --- UPDATED SETTINGS LOGIC ---
 void runSettings(int encStep, bool encPressed, bool k0Pressed) {
     if (k0Pressed) {
-        saveSettings(); // Save global settings on exit
+        saveSettings(); 
         if (currentAlertLevel == ALERT_NONE) setLedState(false);
         currentMode = MODE_MENU;
         drawMenu(true);
         return;
     }
 
-    // Toggle Selection on Click
     if (encPressed) {
-        settingsSelectedRow = !settingsSelectedRow; // Toggle 0 <-> 1
-        
-        // Only keep LED on if we selected the LED row
+        settingsSelectedRow = !settingsSelectedRow; 
         if (settingsSelectedRow == 0) {
              setLedState(true);
         } else {
              setLedState(false);
         }
-        
-        drawSettingsScreen(false); // Redraw to update selection highlight
+        drawSettingsScreen(false); 
     }
 
-    // Adjust Value on Rotation
     if (encStep != 0) {
         if (settingsSelectedRow == 0) {
-            // Adjust LED Brightness (5% steps)
             settingLedBrightness = constrain(settingLedBrightness + (encStep * 5), 0, 100);
-            
-            // FEEDBACK: DIRECT LED UPDATE
             setLedState(true); 
         } else {
-            // Adjust Speaker Volume (5% steps)
             settingSpeakerVol = constrain(settingSpeakerVol + (encStep * 5), 0, 100);
-            
-            // FEEDBACK: DIRECT SOUND BEEP
             playSystemTone(2000, 50); 
         }
-        drawSettingsScreen(false); // Update bars
+        drawSettingsScreen(false); 
     }
 }
 
@@ -1044,23 +1088,19 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  // Initialize History
   for(int i=0; i<HISTORY_LEN; i++) {
     histTemp[i] = 0; histHum[i] = 0; histTVOC[i] = 0; histCO2[i] = 400; 
   }
   historyHead = 0; 
 
-  // Initialize Pins
   pinMode(ENC_A_PIN,   INPUT_PULLUP);
   pinMode(ENC_B_PIN,   INPUT_PULLUP);
   pinMode(ENC_BTN_PIN, INPUT_PULLUP);
   pinMode(KEY0_PIN,    INPUT_PULLUP);
   
-  // Attach PWM for LED and Buzzer
-  ledcAttach(LED_PIN, 5000, 8);  // 5kHz, 8-bit
-  ledcAttach(BUZZ_PIN, 2000, 8); // 2kHz, 8-bit
+  ledcAttach(LED_PIN, 5000, 8);  
+  ledcAttach(BUZZ_PIN, 2000, 8); 
 
-  // Initialize Settings
   loadSettings();
 
   Wire.begin(SDA_PIN, SCL_PIN);
