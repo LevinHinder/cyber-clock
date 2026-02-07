@@ -8,8 +8,8 @@
 #include "time.h"
 
 // ====== WiFi & Time config ======
-const char* ssid      = "Your wifi";
-const char* password  = "pass";
+const char* ssid      = "Hinder WLAN";
+const char* password  = "t&5yblzK6*e#";
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec      = 7 * 3600;   // GMT+7
 const int   daylightOffset_sec = 0;

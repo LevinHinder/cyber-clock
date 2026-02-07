@@ -2,16 +2,16 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
+#include <Adafruit_ST7789.h> 
 #include <Adafruit_AHTX0.h>
 #include <ScioSense_ENS160.h>
 #include "time.h"
 
 // ====== WiFi & Time config ======
-const char* ssid      = "Your wifi";
-const char* password  = "pass";
+const char* ssid      = "Hinder WLAN";
+const char* password  = "t&5yblzK6*e#";
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec      = 7 * 3600;   // GMT+7
+const long  gmtOffset_sec       = 7 * 3600;   // GMT+7
 const int   daylightOffset_sec = 0;
 
 // ====== Pins ======
@@ -33,9 +33,15 @@ const int   daylightOffset_sec = 0;
 #define BUZZ_PIN 3
 
 // ====== TFT & Sensors ======
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST); // hardware SPI
+Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST); 
 Adafruit_AHTX0   aht;
 ScioSense_ENS160 ens160(0x53);   // ENS160 I2C address 0x53
+
+// ====== Screen Dimensions ======
+#define SCREEN_WIDTH  320
+#define SCREEN_HEIGHT 240
+#define SCREEN_CX     (SCREEN_WIDTH / 2)
+#define SCREEN_CY     (SCREEN_HEIGHT / 2)
 
 // ====== Colors ======
 #define CYBER_BG      ST77XX_BLACK
@@ -61,12 +67,11 @@ enum UIMode {
   MODE_CLOCK,
   MODE_POMODORO,
   MODE_ALARM,
-  MODE_DVD,
-  MODE_GAME
+  MODE_DVD
 };
-UIMode currentMode = MODE_CLOCK;       // khởi động vào CLOCK luôn
+UIMode currentMode = MODE_CLOCK;       
 int menuIndex = 0;
-const int MENU_ITEMS = 5;       // Monitor, Pomodoro, Alarm, DVD, Game
+const int MENU_ITEMS = 4;
 
 // ====== Pomodoro ======
 enum PomodoroState {
@@ -151,24 +156,24 @@ bool checkButtonPressed(uint8_t pin, bool &lastState) {
   return pressed;
 }
 
-// ========= Alarm icon =========
+// ========= Alarm icon (UPDATED POSITION) =========
 void drawAlarmIcon() {
-  int x = 148;
-  tft.fillRect(x - 10, 0, 12, 12, CYBER_BG);
+  int x = SCREEN_WIDTH - 24; 
+  tft.fillRect(x - 10, 0, 24, 24, CYBER_BG);
   if (!alarmEnabled) return;
 
-  uint16_t c = CYBER_LIGHT; // cam
-  tft.drawRoundRect(x - 9, 2, 10, 7, 2, c);
-  tft.drawFastHLine(x - 8, 8, 8, c);
-  tft.fillCircle(x - 4, 10, 1, c);
+  uint16_t c = CYBER_LIGHT; 
+  tft.drawRoundRect(x - 9, 4, 18, 14, 4, c);
+  tft.drawFastHLine(x - 7, 16, 14, c);
+  tft.fillCircle(x, 19, 2, c);
 }
 
 // ========= WiFi & Time =========
 void connectWiFiAndSyncTime() {
   tft.fillScreen(CYBER_BG);
   tft.setTextColor(CYBER_LIGHT);
-  tft.setTextSize(1);
-  tft.setCursor(10, 55);
+  tft.setTextSize(2);
+  tft.setCursor(20, 100);
   tft.print("Connecting WiFi");
   WiFi.begin(ssid, password);
 
@@ -182,12 +187,12 @@ void connectWiFiAndSyncTime() {
   if (WiFi.status() == WL_CONNECTED) {
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     tft.fillScreen(CYBER_BG);
-    tft.setCursor(10, 55);
+    tft.setCursor(20, 100);
     tft.print("Syncing time...");
     delay(800);
   } else {
     tft.fillScreen(CYBER_BG);
-    tft.setCursor(10, 55);
+    tft.setCursor(20, 100);
     tft.setTextColor(ST77XX_RED);
     tft.print("WiFi FAILED!");
     delay(1000);
@@ -217,44 +222,34 @@ void updateEnvSensors(bool force = false) {
   }
 
   ens160.set_envdata(curTemp, curHum);
-  ens160.measure();                      // blocking
+  ens160.measure();                      
 
   uint16_t newTVOC = ens160.getTVOC();
   uint16_t newCO2  = ens160.geteCO2();
 
   if (newTVOC != 0xFFFF) curTVOC = newTVOC;
   if (newCO2  != 0xFFFF) curECO2 = newCO2;
-
-  Serial.print("ENS160: TVOC=");
-  Serial.print(curTVOC);
-  Serial.print(" eCO2=");
-  Serial.println(curECO2);
 }
 
-// ========= Clock UI =========
-
-// Grid layout
-const int GRID_L   = 4;
-const int GRID_R   = 156;
-const int GRID_TOP = 56;
-const int GRID_MID = 80;
-const int GRID_BOT = 104;
+// ========= Clock UI (SCALED FOR 320x240) =========
+const int GRID_L   = 8;
+const int GRID_R   = 312;
+const int GRID_TOP = 110;
+const int GRID_MID = 150;
+const int GRID_BOT = 190;
 const int GRID_MID_X = (GRID_L + GRID_R) / 2;
 
-// Y cho label / value (text size 1, cao ~8px)
-const int TOP_LABEL_Y    = GRID_TOP + 4;   // 60
-const int TOP_VALUE_Y    = GRID_TOP + 15;  // 71
-const int BOTTOM_LABEL_Y = GRID_MID + 4;   // 84
-const int BOTTOM_VALUE_Y = GRID_MID + 15;  // 95
+const int TOP_LABEL_Y    = GRID_TOP + 8;  
+const int TOP_VALUE_Y    = GRID_TOP + 24; 
+const int BOTTOM_LABEL_Y = GRID_MID + 8;  
+const int BOTTOM_VALUE_Y = GRID_MID + 24; 
 
-// bar layout
-const int BAR_MARGIN_X = 2;
-const int BAR_GAP      = 2;
-const int BAR_Y        = 110;
-const int BAR_H        = 6;
-const int BAR_W        = (160 - 2 * BAR_MARGIN_X - 3 * BAR_GAP) / 4; // 37
+const int BAR_MARGIN_X = 10;
+const int BAR_GAP      = 4;
+const int BAR_Y        = 205;
+const int BAR_H        = 12;
+const int BAR_W        = (320 - 2 * BAR_MARGIN_X - 3 * BAR_GAP) / 4; 
 
-// In text căn giữa trong khoảng [x0, x1]
 void printCenteredText(const String &txt,
                        int x0, int x1,
                        int y,
@@ -280,13 +275,13 @@ uint16_t colorForCO2(uint16_t eco2) {
 
 void initClockStaticUI() {
   tft.fillScreen(CYBER_BG);
-  tft.setTextSize(1);
+  tft.setTextSize(2);
   tft.setTextColor(ST77XX_WHITE);
 
-  tft.setCursor(4, 4);
+  tft.setCursor(10, 10);
   tft.print("Monitor");
 
-  tft.setCursor(4, 44);
+  tft.setCursor(10, 85);
   tft.print("Air Quality:");
 
   tft.drawFastHLine(GRID_L, GRID_TOP, GRID_R - GRID_L, ST77XX_WHITE);
@@ -294,17 +289,16 @@ void initClockStaticUI() {
   tft.drawFastHLine(GRID_L, GRID_BOT, GRID_R - GRID_L, ST77XX_WHITE);
   tft.drawFastVLine(GRID_MID_X, GRID_TOP, GRID_BOT - GRID_TOP, ST77XX_WHITE);
 
-  // Label căn giữa trong từng ô
   printCenteredText("HUMI", GRID_L,     GRID_MID_X, TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TEMP", GRID_MID_X, GRID_R,     TOP_LABEL_Y,    ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("TVOC", GRID_L,     GRID_MID_X, BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
   printCenteredText("CO2",  GRID_MID_X, GRID_R,     BOTTOM_LABEL_Y, ST77XX_WHITE, CYBER_BG, 1);
 
   int x = BAR_MARGIN_X;
-  tft.fillRect(x,                          BAR_Y, BAR_W, BAR_H, AQ_BAR_GREEN);
-  tft.fillRect(x + (BAR_W + BAR_GAP),      BAR_Y, BAR_W, BAR_H, AQ_BAR_YELLOW);
-  tft.fillRect(x + 2 * (BAR_W + BAR_GAP),  BAR_Y, BAR_W, BAR_H, AQ_BAR_ORANGE);
-  tft.fillRect(x + 3 * (BAR_W + BAR_GAP),  BAR_Y, BAR_W, BAR_H, AQ_BAR_RED);
+  tft.fillRect(x,                       BAR_Y, BAR_W, BAR_H, AQ_BAR_GREEN);
+  tft.fillRect(x + (BAR_W + BAR_GAP),       BAR_Y, BAR_W, BAR_H, AQ_BAR_YELLOW);
+  tft.fillRect(x + 2 * (BAR_W + BAR_GAP),   BAR_Y, BAR_W, BAR_H, AQ_BAR_ORANGE);
+  tft.fillRect(x + 3 * (BAR_W + BAR_GAP),   BAR_Y, BAR_W, BAR_H, AQ_BAR_RED);
 
   drawAlarmIcon();
 }
@@ -316,14 +310,10 @@ void drawClockTime(String hourStr, String minStr, String secStr) {
 
   int16_t x1, y1;
   uint16_t w, h;
-  tft.setTextSize(3);
+  tft.setTextSize(6); 
   tft.getTextBounds(cur, 0, 0, &x1, &y1, &w, &h);
-  int x = (160 - w) / 2;
-  int y = 18;
-
-  tft.setTextColor(CYBER_LIGHT, CYBER_BG);
-  tft.setCursor(x, y);
-  tft.print(cur);
+  int x = (SCREEN_WIDTH - w) / 2;
+  int y = 35;
 
   tft.setTextColor(CYBER_ACCENT, CYBER_BG);
   tft.setCursor(x, y);
@@ -336,7 +326,7 @@ void drawCO2Value(uint16_t eco2, uint16_t col) {
   printCenteredText(String(co2Buf),
                     GRID_MID_X, GRID_R,
                     BOTTOM_VALUE_Y,
-                    col, CYBER_BG, 1);
+                    col, CYBER_BG, 2);
 }
 
 void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
@@ -351,7 +341,7 @@ void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
   printCenteredText(String(humBuf),
                     GRID_L, GRID_MID_X,
                     TOP_VALUE_Y,
-                    colHUMI, CYBER_BG, 1);
+                    colHUMI, CYBER_BG, 2);
 
   // TEMP
   char tempBuf[10];
@@ -359,32 +349,32 @@ void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
   printCenteredText(String(tempBuf),
                     GRID_MID_X, GRID_R,
                     TOP_VALUE_Y,
-                    colTEMP, CYBER_BG, 1);
+                    colTEMP, CYBER_BG, 2);
 
   // TVOC (mg/m3)
   float tvoc_mg = tvoc / 1000.0f;
   char tvocBuf[16];
-  sprintf(tvocBuf, "%.3fmg/m3", tvoc_mg);
+  sprintf(tvocBuf, "%.3fmg", tvoc_mg);
   printCenteredText(String(tvocBuf),
                     GRID_L, GRID_MID_X,
                     BOTTOM_VALUE_Y,
-                    colTVOC, CYBER_BG, 1);
+                    colTVOC, CYBER_BG, 2);
 
   // CO2 (ppm)
   drawCO2Value(eco2, colCO2);
 
-  // Thanh màu + tam giác
+  // Color Bar Indicator
   uint8_t level = 1;
   if (eco2 > 1800) level = 4;
   else if (eco2 > 1200) level = 3;
   else if (eco2 > 800)  level = 2;
 
-  tft.fillRect(0, BAR_Y + BAR_H + 1, 160, 8, CYBER_BG);
+  tft.fillRect(0, BAR_Y + BAR_H + 1, SCREEN_WIDTH, 10, CYBER_BG);
   int centerX = BAR_MARGIN_X + (BAR_W / 2) + (level - 1) * (BAR_W + BAR_GAP);
-  int tipY    = BAR_Y + BAR_H + 2;
+  int tipY    = BAR_Y + BAR_H + 4;
   tft.fillTriangle(centerX,     tipY - 4,
-                   centerX - 4, tipY + 2,
-                   centerX + 4, tipY + 2,
+                   centerX - 6, tipY + 6,
+                   centerX + 6, tipY + 6,
                    ST77XX_WHITE);
 }
 
@@ -392,35 +382,34 @@ void drawEnvDynamic(float temp, float hum, uint16_t tvoc, uint16_t eco2) {
 void drawMenu() {
   tft.fillScreen(CYBER_BG);
 
-  tft.setTextSize(1);
+  tft.setTextSize(2);
   tft.setTextColor(CYBER_LIGHT);
-  tft.setCursor(10, 10);
+  tft.setCursor(20, 20);
   tft.print("MODE SELECT");
 
   const char* items[MENU_ITEMS] = {
     "Monitor",
     "Pomodoro",
     "Alarm",
-    "DVD",
-    "Space Attack"
+    "DVD"
   };
 
   for (int i = 0; i < MENU_ITEMS; i++) {
-    int y = 32 + i * 18;
+    int y = 60 + i * 35; 
     if (i == menuIndex) {
-      tft.fillRect(6, y - 2, 148, 14, CYBER_ACCENT);
+      tft.fillRect(10, y - 4, 300, 28, CYBER_ACCENT);
       tft.setTextColor(CYBER_BG);
     } else {
-      tft.fillRect(6, y - 2, 148, 14, CYBER_BG);
+      tft.fillRect(10, y - 4, 300, 28, CYBER_BG);
       tft.setTextColor(ST77XX_WHITE);
     }
-    tft.setCursor(12, y);
+    tft.setCursor(24, y);
     tft.print(items[i]);
   }
   drawAlarmIcon();
 }
 
-// ========= Pomodoro =========
+// ========= Pomodoro (SCALED) =========
 uint16_t pomoColorFromFrac(float f) {
   if (f < 0.33f) return AQ_BAR_GREEN;
   if (f < 0.66f) return AQ_BAR_YELLOW;
@@ -428,28 +417,28 @@ uint16_t pomoColorFromFrac(float f) {
   return AQ_BAR_RED;
 }
 
-// Vòng Pomodoro 270°
 void drawPomodoroRing(float progress) {
-  int cx = 80;
-  int cy = 64;
-  int rOuter = 55;
-  int rInner = 44;
+  int cx = SCREEN_CX; 
+  int cy = SCREEN_CY; 
+  int rOuter = 100;   
+  int rInner = 80;    
 
-  // Vẽ cung 270°: từ -225° đến +45° (chừa hở đáy)
   const float startDeg = -225.0f;
   const float endDeg   =   45.0f;
-  const float spanDeg  = endDeg - startDeg;   // 270°
+  const float spanDeg  = endDeg - startDeg;   
 
-  for (float deg = startDeg; deg <= endDeg; deg += 6.0f) {
+  for (float deg = startDeg; deg <= endDeg; deg += 3.0f) { 
     float frac = (deg - startDeg) / spanDeg;   // 0..1
     uint16_t col = (frac <= progress) ? pomoColorFromFrac(frac) : CYBER_DARK;
 
     float rad = deg * PI / 180.0f;
-    int xOuter = cx + cos(rad) * rOuter;
-    int yOuter = cy + sin(rad) * rOuter;
-    int xInner = cx + cos(rad) * rInner;
-    int yInner = cy + sin(rad) * rInner;
-    tft.drawLine(xInner, yInner, xOuter, yOuter, col);
+    for(int i=0; i<3; i++) {
+        int xOuter = cx + cos(rad) * (rOuter+i);
+        int yOuter = cy + sin(rad) * (rOuter+i);
+        int xInner = cx + cos(rad) * (rInner-i);
+        int yInner = cy + sin(rad) * (rInner-i);
+        tft.drawLine(xInner, yInner, xOuter, yOuter, col);
+    }
   }
 }
 
@@ -463,18 +452,18 @@ void drawPomodoroScreen(bool forceStatic) {
 
   if (needStatic) {
     tft.fillScreen(CYBER_BG);
-    tft.fillRect(0, 0, 160, 16, CYBER_BG);
-    tft.setTextSize(1);
-    tft.setCursor(8, 4);
+    tft.fillRect(0, 0, SCREEN_WIDTH, 30, CYBER_BG);
+    tft.setTextSize(2);
+    tft.setCursor(16, 8);
     tft.setTextColor(CYBER_LIGHT);
     tft.print("POMODORO");
     drawAlarmIcon();
   }
 
-  tft.setTextSize(1);
+  tft.setTextSize(2);
   tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-  tft.fillRect(100, 0, 60, 16, CYBER_BG);
-  tft.setCursor(108, 4);
+  tft.fillRect(200, 0, 100, 30, CYBER_BG);
+  tft.setCursor(210, 8);
   tft.printf("%2d min", pomoDurationsMin[pomoPresetIndex]);
 
   unsigned long durationMs = pomoDurationsMin[pomoPresetIndex] * 60UL * 1000UL;
@@ -487,9 +476,9 @@ void drawPomodoroScreen(bool forceStatic) {
   float progress = (durationMs > 0) ? (float)elapsed / durationMs : 0.0f;
   drawPomodoroRing(progress);
 
-  int cx = 80;
-  int cy = 64;
-  tft.fillCircle(cx, cy, 38, CYBER_BG);
+  int cx = SCREEN_CX;
+  int cy = SCREEN_CY;
+  tft.fillCircle(cx, cy, 70, CYBER_BG); 
 
   unsigned long remain = durationMs - elapsed;
   uint16_t rmMin = remain / 60000UL;
@@ -500,27 +489,26 @@ void drawPomodoroScreen(bool forceStatic) {
 
   int16_t x1, y1;
   uint16_t w, h;
-  tft.setTextSize(3);
+  tft.setTextSize(5); 
   tft.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(cx - w / 2, cy - 8);
+  tft.setCursor(cx - w / 2, cy - 15);
   tft.setTextColor(ST77XX_WHITE, CYBER_BG);
   tft.print(buf);
 
-  // Footer: chỉ hiện Paused / Completed
-  tft.fillRect(0, 96, 160, 32, CYBER_BG);
-  tft.setTextSize(1);
-  tft.setCursor(8, 100);
+  tft.fillRect(0, 200, SCREEN_WIDTH, 40, CYBER_BG);
+  tft.setTextSize(2);
+  tft.setCursor(16, 205);
   tft.setTextColor(CYBER_GREEN, CYBER_BG);
   if (pomoState == POMO_PAUSED)      tft.print("Paused");
   else if (pomoState == POMO_DONE)   tft.print("Completed");
 }
 
-// ========= Alarm UI =========
+// ========= Alarm UI (SCALED) =========
 void drawAlarmScreen(bool full) {
   if (full) {
     tft.fillScreen(CYBER_BG);
-    tft.setTextSize(1);
-    tft.setCursor(8, 4);
+    tft.setTextSize(2);
+    tft.setCursor(16, 8);
     tft.setTextColor(CYBER_LIGHT);
     tft.print("ALARM");
     drawAlarmIcon();
@@ -531,14 +519,14 @@ void drawAlarmScreen(bool full) {
   sprintf(hBuf, "%02d", alarmHour);
   sprintf(mBuf, "%02d", alarmMinute);
 
-  tft.setTextSize(3);
+  tft.setTextSize(6);
 
   String disp = String(hBuf) + ":" + String(mBuf);
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(disp, 0, 0, &x1, &y1, &w, &h);
-  int x = (160 - w) / 2;
-  int y = 30;
+  int x = (SCREEN_WIDTH - w) / 2;
+  int y = 60;
 
   tft.setCursor(x, y);
   tft.setTextColor(alarmSelectedField == 0 ? CYBER_LIGHT : ST77XX_WHITE, CYBER_BG);
@@ -550,12 +538,12 @@ void drawAlarmScreen(bool full) {
   tft.setTextColor(alarmSelectedField == 1 ? CYBER_LIGHT : ST77XX_WHITE, CYBER_BG);
   tft.print(mBuf);
 
-  tft.setTextSize(1);
+  tft.setTextSize(3);
   tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-  tft.fillRect(20, 80, 120, 24, CYBER_BG);
-  tft.setCursor(30, 84);
-  tft.print("Alarm:");
-  tft.setCursor(80, 84);
+  tft.fillRect(40, 160, 240, 40, CYBER_BG);
+  tft.setCursor(50, 165);
+  tft.print("Status:");
+  tft.setCursor(180, 165);
   uint16_t enColor = alarmSelectedField == 2
                      ? CYBER_LIGHT
                      : (alarmEnabled ? CYBER_GREEN : ST77XX_RED);
@@ -565,9 +553,9 @@ void drawAlarmScreen(bool full) {
 
 void drawAlarmRingingScreen() {
   tft.fillScreen(ST77XX_RED);
-  tft.setTextSize(2);
+  tft.setTextSize(4);
   tft.setTextColor(ST77XX_WHITE, ST77XX_RED);
-  tft.setCursor(30, 40);
+  tft.setCursor(60, 100);
   tft.print("ALARM!");
 }
 
@@ -588,25 +576,34 @@ void checkAlarmTrigger() {
   }
 }
 
-// ========= Alert visual + audio =========
+// ========= Alert visual + audio (UPDATED) =========
 void updateAlertStateAndLED() {
+  // 1. Determine Alert Level
   if (alarmRinging) currentAlertLevel = ALERT_ALARM;
   else if (curECO2 > 1800) currentAlertLevel = ALERT_CO2;
   else currentAlertLevel = ALERT_NONE;
 
   unsigned long now = millis();
 
-  unsigned long interval;
-  if (currentAlertLevel == ALERT_ALARM)      interval = 120;
-  else if (currentAlertLevel == ALERT_CO2)   interval = 250;
-  else                                       interval = 1000;
+  // 2. Handle LED Logic
+  if (currentAlertLevel == ALERT_NONE) {
+    // FORCE OFF if no danger/alarm (Stop the heartbeat blink)
+    digitalWrite(LED_PIN, LOW);
+    ledState = false; 
+  } else {
+    // Blink only if Alarm or High CO2
+    unsigned long interval;
+    if (currentAlertLevel == ALERT_ALARM)      interval = 120; // Fast panic blink
+    else /* ALERT_CO2 */                       interval = 250; // Fast warning blink
 
-  if (now - lastLedToggleMs > interval) {
-    lastLedToggleMs = now;
-    ledState = !ledState;
-    digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    if (now - lastLedToggleMs > interval) {
+      lastLedToggleMs = now;
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    }
   }
 
+  // 3. Handle Screen Blinking/Buzzer for CO2 (Visual/Audio warning)
   if (currentAlertLevel == ALERT_CO2) {
     if (now - lastCo2BlinkMs > 350) {
       lastCo2BlinkMs = now;
@@ -619,232 +616,13 @@ void updateAlertStateAndLED() {
   }
 }
 
-// ========= GAME: Space Attack (simple TFT version) =========
-
-// court layout
-const int COURT_X = 8;
-const int COURT_Y = 16;
-const int COURT_W = 144;
-const int COURT_H = 96;
-
-const int PADDLE_W = 18;
-const int PADDLE_H = 4;
-const int PADDLE_Y = COURT_Y + COURT_H - 8;
-
-const int ALIEN_ROWS = 3;
-const int ALIEN_COLS = 8;
-bool alienAlive[ALIEN_ROWS][ALIEN_COLS];
-int  alienOffsetX = 0;   // pixel offset
-int  alienDir     = 1;   // 1:right, -1:left
-unsigned long lastAlienMoveMs = 0;
-unsigned long alienMoveInterval = 250;
-
-bool  bulletActive = false;
-int   bulletX = 0, bulletY = 0;
-unsigned long lastBulletMoveMs = 0;
-unsigned long bulletInterval = 25;
-
-int  playerX = COURT_X + (COURT_W - PADDLE_W) / 2;
-int  gameScore = 0;
-bool gameOver  = false;
-bool gameInited = false;
-
-void initGame() {
-  gameScore = 0;
-  gameOver  = false;
-  gameInited = true;
-
-  // background
-  tft.fillScreen(CYBER_BG);
-  tft.drawRect(COURT_X, COURT_Y, COURT_W, COURT_H, CYBER_ACCENT);
-
-  // aliens
-  for (int r = 0; r < ALIEN_ROWS; r++) {
-    for (int c = 0; c < ALIEN_COLS; c++) {
-      alienAlive[r][c] = true;
-    }
-  }
-  alienOffsetX = 0;
-  alienDir     = 1;
-
-  bulletActive = false;
-
-  // title
-  tft.setTextSize(1);
-  tft.setTextColor(CYBER_LIGHT, CYBER_BG);
-  tft.setCursor(10, 2);
-  tft.print("SPACE ATTACK");
-
-  // score
-  tft.setCursor(110, 2);
-  tft.print("0");
-
-  drawAlarmIcon();
-}
-
-void drawScore() {
-  tft.fillRect(100, 0, 60, 10, CYBER_BG);
-  tft.setCursor(110, 2);
-  tft.setTextSize(1);
-  tft.setTextColor(CYBER_GREEN, CYBER_BG);
-  tft.print(gameScore);
-}
-
-void drawPlayer() {
-  tft.fillRect(COURT_X + 1, PADDLE_Y, COURT_W - 2, PADDLE_H, CYBER_BG);
-  tft.fillRect(playerX, PADDLE_Y, PADDLE_W, PADDLE_H, CYBER_ACCENT);
-}
-
-void drawAliens() {
-  // clear area
-  tft.fillRect(COURT_X + 1, COURT_Y + 1, COURT_W - 2, COURT_H - 16, CYBER_BG);
-
-  int cellW = COURT_W / ALIEN_COLS;
-  int cellH = 12;
-
-  for (int r = 0; r < ALIEN_ROWS; r++) {
-    for (int c = 0; c < ALIEN_COLS; c++) {
-      if (!alienAlive[r][c]) continue;
-      int x = COURT_X + 4 + alienOffsetX + c * cellW;
-      int y = COURT_Y + 4 + r * cellH;
-      tft.fillRect(x, y, 8, 6, CYBER_GREEN);
-      tft.drawRect(x, y, 8, 6, CYBER_DARK);
-    }
-  }
-}
-
-void drawBullet() {
-  // clear old bullet track
-  tft.fillRect(COURT_X + 1, COURT_Y + 1, COURT_W - 2, COURT_H - 2, CYBER_BG);
-  drawAliens();
-  drawPlayer();
-
-  if (bulletActive) {
-    tft.drawFastVLine(bulletX, bulletY, 4, CYBER_PINK);
-  }
-}
-
-void updateGameLogic(int encStep, bool firePressed, bool backPressed) {
-  if (backPressed) {
-    gameInited = false;
-    currentMode = MODE_MENU;
-    drawMenu();
-    return;
-  }
-
-  if (gameOver) {
-    tft.setTextSize(2);
-    tft.setTextColor(ST77XX_WHITE, CYBER_BG);
-    tft.setCursor(35, 60);
-    tft.print("GAME OVER");
-    if (firePressed || encStep != 0) {
-      initGame();
-      drawAliens();
-      drawPlayer();
-    }
-    return;
-  }
-
-  // move player by encoder
-  if (encStep != 0) {
-    playerX += encStep * 4;  // nhanh tay hơn
-    if (playerX < COURT_X + 2) playerX = COURT_X + 2;
-    if (playerX + PADDLE_W > COURT_X + COURT_W - 2)
-      playerX = COURT_X + COURT_W - 2 - PADDLE_W;
-    drawPlayer();
-  }
-
-  // fire
-  if (firePressed && !bulletActive) {
-    bulletActive = true;
-    bulletX = playerX + PADDLE_W / 2;
-    bulletY = PADDLE_Y - 2;
-    tone(BUZZ_PIN, 1800, 40);
-  }
-
-  unsigned long now = millis();
-
-  // move aliens
-  if (now - lastAlienMoveMs > alienMoveInterval) {
-    lastAlienMoveMs = now;
-    alienOffsetX += alienDir * 4;
-
-    int leftMost = INT16_MAX;
-    int rightMost = INT16_MIN;
-
-    int cellW = COURT_W / ALIEN_COLS;
-    for (int c = 0; c < ALIEN_COLS; c++) {
-      for (int r = 0; r < ALIEN_ROWS; r++) {
-        if (!alienAlive[r][c]) continue;
-        int x = alienOffsetX + c * cellW;
-        if (x < leftMost) leftMost = x;
-        if (x > rightMost) rightMost = x;
-      }
-    }
-
-    if (leftMost + 4 < 0)  alienDir = 1;
-    if (rightMost + 12 > COURT_W) alienDir = -1;
-
-    drawAliens();
-  }
-
-  // move bullet
-  if (bulletActive && now - lastBulletMoveMs > bulletInterval) {
-    lastBulletMoveMs = now;
-    bulletY -= 4;
-    if (bulletY < COURT_Y + 2) {
-      bulletActive = false;
-    } else {
-      // check collision
-      int cellW = COURT_W / ALIEN_COLS;
-      int cellH = 12;
-
-      for (int r = 0; r < ALIEN_ROWS; r++) {
-        for (int c = 0; c < ALIEN_COLS; c++) {
-          if (!alienAlive[r][c]) continue;
-          int alienX = COURT_X + 4 + alienOffsetX + c * cellW;
-          int alienY = COURT_Y + 4 + r * cellH;
-          if (bulletX >= alienX && bulletX <= alienX + 8 &&
-              bulletY >= alienY && bulletY <= alienY + 6) {
-            alienAlive[r][c] = false;
-            bulletActive = false;
-            gameScore += 10;
-            tone(BUZZ_PIN, 2200, 60);
-            drawScore();
-          }
-        }
-      }
-    }
-    drawBullet();
-  }
-
-  // check win / lose
-  bool anyAlive = false;
-  for (int r = 0; r < ALIEN_ROWS; r++) {
-    for (int c = 0; c < ALIEN_COLS; c++) {
-      if (alienAlive[r][c]) {
-        anyAlive = true;
-        int cellH = 12;
-        int alienY = COURT_Y + 4 + r * cellH;
-        if (alienY + 6 >= PADDLE_Y) {
-          gameOver = true;
-        }
-      }
-    }
-  }
-  if (!anyAlive) {
-    gameOver = true;
-  }
-}
-
-// ========= DVD screensaver =========
-
+// ========= DVD screensaver (SCALED) =========
 bool dvdInited = false;
 int  dvdX, dvdY;
 int  dvdVX = 2;
 int  dvdVY = 1;
-int  dvdW  = 50;
-int  dvdH  = 18;
+int  dvdW  = 80; 
+int  dvdH  = 30; 
 unsigned long lastDvdMs = 0;
 unsigned long dvdInterval = 35;
 
@@ -859,12 +637,9 @@ uint16_t dvdColors[] = {
 int dvdColorIndex = 0;
 
 void drawDvdLogo(int x, int y, uint16_t c) {
-  // x,y: top-left
-  tft.fillRoundRect(x, y, dvdW, dvdH, 4, c);
-  tft.drawRoundRect(x, y, dvdW, dvdH, 4, CYBER_BG);
-
-  // chữ DVD ở giữa
-  tft.setTextSize(1);
+  tft.fillRoundRect(x, y, dvdW, dvdH, 8, c);
+  tft.drawRoundRect(x, y, dvdW, dvdH, 8, CYBER_BG);
+  tft.setTextSize(2);
   tft.setTextColor(CYBER_BG, c);
   int16_t bx, by;
   uint16_t w, h;
@@ -878,23 +653,17 @@ void drawDvdLogo(int x, int y, uint16_t c) {
 void initDvd() {
   dvdInited = true;
   tft.fillScreen(CYBER_BG);
-
-  // header
-  tft.setTextSize(1);
+  tft.setTextSize(2);
   tft.setTextColor(CYBER_LIGHT, CYBER_BG);
-  tft.setCursor(8, 4);
+  tft.setCursor(16, 8);
   tft.print("DVD");
-
   drawAlarmIcon();
-
-  // vùng chạy logo: chừa header 16px
-  dvdX = 40;
-  dvdY = 40;
-  dvdVX = 2;
-  dvdVY = 1;
+  dvdX = 80;
+  dvdY = 80;
+  dvdVX = 3;
+  dvdVY = 2;
   lastDvdMs = millis();
   dvdColorIndex = 0;
-
   drawDvdLogo(dvdX, dvdY, dvdColors[dvdColorIndex]);
 }
 
@@ -908,11 +677,10 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
     return;
   }
 
-  // encoder chỉnh nhẹ tốc độ ngang
   if (encStep != 0) {
     int speed = abs(dvdVX) + encStep;
     if (speed < 1) speed = 1;
-    if (speed > 4) speed = 4;
+    if (speed > 8) speed = 8;
     dvdVX = (dvdVX >= 0 ? 1 : -1) * speed;
   }
 
@@ -920,18 +688,15 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
   if (now - lastDvdMs < dvdInterval) return;
   lastDvdMs = now;
 
-  // xóa logo cũ
-  tft.fillRoundRect(dvdX, dvdY, dvdW, dvdH, 4, CYBER_BG);
+  tft.fillRoundRect(dvdX, dvdY, dvdW, dvdH, 8, CYBER_BG);
 
-  // update vị trí
   dvdX += dvdVX;
   dvdY += dvdVY;
 
-  // biên trong vùng màn
   int left   = 0;
-  int right  = 160 - dvdW;
-  int top    = 16;
-  int bottom = 128 - dvdH;
+  int right  = SCREEN_WIDTH - dvdW;
+  int top    = 30;
+  int bottom = SCREEN_HEIGHT - dvdH;
 
   bool hitX = false;
   bool hitY = false;
@@ -956,7 +721,6 @@ void updateDvd(int encStep, bool encPressed, bool backPressed) {
     hitY = true;
   }
 
-  // nếu đập vào góc (cả X & Y cùng va chạm) => đổi màu
   if (hitX && hitY) {
     dvdColorIndex++;
     if (dvdColorIndex >= (int)(sizeof(dvdColors) / sizeof(dvdColors[0]))) {
@@ -982,10 +746,11 @@ void setup() {
   pinMode(BUZZ_PIN, OUTPUT);
 
   Wire.begin(SDA_PIN, SCL_PIN);
-  SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
+  SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS); 
 
-  tft.initR(INITR_BLACKTAB);
-  tft.setRotation(1);
+  tft.init(240, 320); 
+  tft.setRotation(1); 
+  tft.invertDisplay(false);
   tft.fillScreen(CYBER_BG);
 
   connectWiFiAndSyncTime();
@@ -996,7 +761,6 @@ void setup() {
 
   updateEnvSensors(true);
 
-  // khởi động vào Monitor (clock)
   initClockStaticUI();
   prevTimeStr = "";
   drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
@@ -1050,10 +814,7 @@ void loop() {
         } else if (menuIndex == 3) {
           currentMode = MODE_DVD;
           dvdInited = false;
-        } else if (menuIndex == 4) {
-          currentMode = MODE_GAME;
-          gameInited = false;
-        }
+        } 
       }
       break;
     }
@@ -1196,16 +957,6 @@ void loop() {
         initDvd();
       }
       updateDvd(encStep, encPressed, k0Pressed);
-      break;
-    }
-
-    case MODE_GAME: {
-      if (!gameInited) {
-        initGame();
-        drawAliens();
-        drawPlayer();
-      }
-      updateGameLogic(encStep, encPressed, k0Pressed);
       break;
     }
   }
