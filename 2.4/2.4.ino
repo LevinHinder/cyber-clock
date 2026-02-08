@@ -152,6 +152,8 @@ struct UIContext {
 
     // Settings UI
     int settingsSelectedRow = 0;
+    bool settingsEditMode = false;
+    bool settingsInited = false;
     int prevLedBarW = -1;
     int prevSpkBarW = -1;
     
@@ -532,6 +534,7 @@ void drawMenu(bool fullRedraw) {
 
 void runMenu(int encStep, bool encPressed, bool k0Pressed) {
     if (encStep != 0) {
+        // ... (keep existing scroll logic) ...
         // Redraw old selection as unselected
         int oldIndex = ui.menuIndex;
         int rowCenterY = 60 + oldIndex * 35;
@@ -553,53 +556,48 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
     
     if (encPressed) {
         if (ui.menuIndex == 0) { // Monitor
-            ui.currentMode = MODE_CLOCK;
-            initClockStaticUI();
-            ui.prevTimeStr = "";
-            updateEnvSensors(true);
-            drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
-            drawEnvDynamic();
+             // ... (keep existing) ...
+             ui.currentMode = MODE_CLOCK;
+             initClockStaticUI();
+             ui.prevTimeStr = "";
+             updateEnvSensors(true);
+             drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+             drawEnvDynamic();
         } else if (ui.menuIndex == 1) { // Pomodoro
-            ui.currentMode = MODE_POMODORO;
-            pomo.state = POMO_SET_WORK;
-            pomo.prevVal = -1;
-            tft.fillScreen(Colors::BG);
-            tft.setTextSize(2); tft.setTextColor(Colors::LIGHT, Colors::BG);
-            printCenteredText("Set Work", 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
-            
-            // Draw Value
-            tft.fillRect((Screen::WIDTH - 100)/2, 100, 100, 50, Colors::BG);
-            tft.setTextSize(6); tft.setTextColor(ST77XX_WHITE, Colors::BG);
-            String v = String(settings.pomoWorkMin);
-            int16_t x1, y1; uint16_t w, h; tft.getTextBounds(v, 0, 0, &x1, &y1, &w, &h);
-            tft.setCursor((Screen::WIDTH - w)/2, 100); tft.print(v);
-            pomo.prevVal = settings.pomoWorkMin;
-
+             // ... (keep existing) ...
+             ui.currentMode = MODE_POMODORO;
+             pomo.state = POMO_SET_WORK;
+             pomo.prevVal = -1;
+             tft.fillScreen(Colors::BG);
+             tft.setTextSize(2); tft.setTextColor(Colors::LIGHT, Colors::BG);
+             printCenteredText("Set Work", 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
+             updatePomodoroValue(settings.pomoWorkMin);
         } else if (ui.menuIndex == 2) { // Alarm
-            ui.currentMode = MODE_ALARM;
-            ui.alarmSelectedField = 0;
-            // Draw Alarm Screen Full
-            tft.fillScreen(Colors::BG);
-            drawAlarmIcon();
-            // We reuse the drawing logic inside runAlarm via a flag check effectively
-            // But strict separation suggests we call a draw function.
-            // Simplified: force loop to draw next frame
+             // ... (keep existing) ...
+             ui.currentMode = MODE_ALARM;
+             ui.alarmSelectedField = 0;
+             tft.fillScreen(Colors::BG);
+             drawAlarmIcon();
         } else if (ui.menuIndex == 3) { // DVD
-            ui.currentMode = MODE_DVD;
-            ui.dvdInited = false;
+             // ... (keep existing) ...
+             ui.currentMode = MODE_DVD;
+             ui.dvdInited = false;
         } else if (ui.menuIndex == 4) { // Settings
-            ui.currentMode = MODE_SETTINGS;
-            ui.settingsSelectedRow = 0; 
-            setLedState(true);       
-            tft.fillScreen(Colors::BG);
-            drawAlarmIcon();
-            ui.prevLedBarW = -1; ui.prevSpkBarW = -1;
-            // First draw happens in loop
+             // === FIX APPLIED HERE ===
+             ui.currentMode = MODE_SETTINGS;
+             ui.settingsSelectedRow = 0; 
+             ui.settingsEditMode = false;
+             ui.settingsInited = false; // Tells runSettings to draw the screen
+             
+             setLedState(false); // Explicitly ensure LED is OFF
+             
+             // Removed the tft.fillScreen and other drawing calls here
+             // to let runSettings handle it cleanly.
         }
     }
     
     if (k0Pressed) {
-        // Back to clock from menu
+        // ... (keep existing) ...
         ui.currentMode = MODE_CLOCK;
         initClockStaticUI();
         ui.prevTimeStr = "";
@@ -985,53 +983,96 @@ void drawSettingsScreen(bool full) {
 
     int barX = 40; int barW = 240; int barH = 15;
     
-    // LED Section
+    // --- Determine Colors ---
+    // Default to White
+    uint16_t ledTextColor = ST77XX_WHITE;
+    uint16_t spkTextColor = ST77XX_WHITE;
+
+    // Logic: Blue for Navigation (Scrolling), Green for Action (Editing)
+    if (ui.settingsSelectedRow == 0) {
+        // LED Row is selected
+        ledTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
+    } else {
+        // Speaker Row is selected
+        spkTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
+    }
+    
+    // --- Draw LED Section ---
     int yLed = 80;
     tft.setTextSize(2);
-    tft.setTextColor(ui.settingsSelectedRow == 0 ? Colors::ACCENT : ST77XX_WHITE, Colors::BG);
+    tft.setTextColor(ledTextColor, Colors::BG);
     tft.setCursor(barX, yLed - 20);
     tft.print("LED Brightness");
     drawBarItem(barX, yLed, barW, barH, settings.ledBrightness, ui.prevLedBarW);
 
-    // Speaker Section
+    // --- Draw Speaker Section ---
     int ySpk = 160;
-    tft.setTextColor(ui.settingsSelectedRow == 1 ? Colors::ACCENT : ST77XX_WHITE, Colors::BG);
+    tft.setTextColor(spkTextColor, Colors::BG);
     tft.setCursor(barX, ySpk - 20);
     tft.print("Speaker Volume");
     drawBarItem(barX, ySpk, barW, barH, settings.speakerVol, ui.prevSpkBarW);
 }
 
 void runSettings(int encStep, bool encPressed, bool k0Pressed) {
+    // Exit Logic
     if (k0Pressed) {
         saveSettings(); 
-        if (ui.currentAlert == ALERT_NONE) setLedState(false);
+        setLedState(false); // Ensure LED is off when leaving
+        
+        ui.settingsEditMode = false;
+        ui.settingsSelectedRow = 0;
+        
         ui.currentMode = MODE_MENU;
         drawMenu(true);
         return;
     }
     
-    // Initial draw check (simplified)
-    static int lastMode = -1;
-    if (lastMode != MODE_SETTINGS) {
+    // === FIX: INITIAL DRAW LOGIC ===
+    if (!ui.settingsInited) {
         drawSettingsScreen(true);
-        lastMode = MODE_SETTINGS;
+        ui.settingsInited = true;
     }
 
+    // --- Handle Encoder Click (Toggle Edit Mode) ---
     if (encPressed) {
-        ui.settingsSelectedRow = !ui.settingsSelectedRow; 
-        if (ui.settingsSelectedRow == 0) setLedState(true);
-        else setLedState(false);
+        ui.settingsEditMode = !ui.settingsEditMode;
+        
+        // LED CONTROL: Only turn on if we are Editing Row 0 (LED)
+        if (ui.settingsEditMode && ui.settingsSelectedRow == 0) {
+            setLedState(true);
+        } else {
+            setLedState(false);
+        }
+
+        // === FIX: SILENT ENTER (No Tone) ===
+        // Sound removed
+        
         drawSettingsScreen(false); 
     }
 
+    // --- Handle Encoder Rotation ---
     if (encStep != 0) {
-        if (ui.settingsSelectedRow == 0) {
-            settings.ledBrightness = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
-            setLedState(true); 
+        if (ui.settingsEditMode) {
+            // === EDIT MODE (Green Text) ===
+            if (ui.settingsSelectedRow == 0) {
+                // Change Brightness
+                settings.ledBrightness = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
+                setLedState(true); // Keep LED on while changing brightness
+            } else {
+                // Change Volume
+                settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
+                playSystemTone(2000, 20); // Keep volume click for feedback
+            }
         } else {
-            settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
-            playSystemTone(2000, 50); 
+            // === NAV MODE (Blue Text) ===
+            setLedState(false); 
+
+            // Scroll Selection
+            ui.settingsSelectedRow += encStep;
+            if (ui.settingsSelectedRow < 0) ui.settingsSelectedRow = 1;
+            if (ui.settingsSelectedRow > 1) ui.settingsSelectedRow = 0;
         }
+        
         drawSettingsScreen(false); 
     }
 }
