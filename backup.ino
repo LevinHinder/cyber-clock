@@ -7,14 +7,13 @@
 #include <ScioSense_ENS160.h>
 #include <Preferences.h> 
 #include "time.h"
+#include <WiFiManager.h> 
 
 // ==========================================
 //               CONSTANTS
 // ==========================================
 
 namespace Net {
-    const char* SSID = "Hinder WLAN";
-    const char* PASS = "t&5yblzK6*e#";
     const char* NTP_SERVER = "pool.ntp.org";
     const char* TIME_ZONE = "CET-1CEST,M3.5.0,M10.5.0/3"; 
 }
@@ -55,11 +54,6 @@ namespace Colors {
     constexpr uint16_t DARK       = 0x4208;
     constexpr uint16_t GRID       = 0x2104; 
     
-    constexpr uint16_t AQ_GREEN   = 0x07E0;
-    constexpr uint16_t AQ_YELLOW  = 0xFFE0;
-    constexpr uint16_t AQ_ORANGE  = 0xFD20;
-    constexpr uint16_t AQ_RED     = 0xF800;
-
     constexpr uint16_t TEMP       = ST77XX_RED;
     constexpr uint16_t HUM        = BLUE;
     constexpr uint16_t TVOC       = GREEN;
@@ -83,10 +77,9 @@ namespace Layout {
 //               DATA STRUCTURES
 // ==========================================
 
-enum UIMode { MODE_MENU = 0, MODE_CLOCK, MODE_POMODORO, MODE_ALARM, MODE_DVD, MODE_SETTINGS };
+enum UIMode { MODE_MENU = 0, MODE_CLOCK, MODE_POMODORO, MODE_ALARM, MODE_DVD, MODE_SETTINGS, MODE_WIFI_SETUP };
 enum AlertLevel { ALERT_NONE = 0, ALERT_CO2, ALERT_ALARM };
 
-// Pomodoro State Enums
 enum PomodoroState { POMO_SET_WORK = 0, POMO_SET_SHORT, POMO_SET_LONG, POMO_SET_CYCLES, POMO_READY, POMO_RUNNING, POMO_PAUSED, POMO_DONE };
 enum PomoPhase { PHASE_WORK, PHASE_SHORT, PHASE_LONG };
 
@@ -113,7 +106,6 @@ struct EnvData {
     uint16_t eco2 = 400;
     unsigned long lastRead = 0;
     
-    // History
     static const int HIST_LEN = 320;
     uint16_t hTemp[HIST_LEN];
     uint16_t hHum[HIST_LEN];
@@ -131,7 +123,6 @@ struct PomodoroContext {
     unsigned long pausedMillis = 0;
     unsigned long durationMs = 0;
     
-    // UI Tracking
     int prevVal = -1; 
     int prevBarWidth = -1; 
     String prevLabel = "";
@@ -152,10 +143,15 @@ struct UIContext {
 
     // Settings UI
     int settingsSelectedRow = 0;
+    // UPDATED: Now 4 rows (LED, Spk, Setup WiFi, Reset WiFi)
+    static const int SETTINGS_ROWS = 4; 
     bool settingsEditMode = false;
     bool settingsInited = false;
     int prevLedBarW = -1;
     int prevSpkBarW = -1;
+    
+    // WiFi Setup UI
+    bool wifiSetupInited = false;
     
     // Clock UI
     int prevSecond = -1;
@@ -193,6 +189,7 @@ GFXcanvas16 graphCanvas(320, 90);
 Adafruit_AHTX0 aht;
 ScioSense_ENS160 ens160(0x53);
 Preferences prefs; 
+WiFiManager wm; 
 
 AppSettings settings;
 EnvData env;
@@ -300,6 +297,12 @@ String getTimeStr(char type) {
     else if (type == 'M') strftime(buf, sizeof(buf), "%M", &timeinfo);
     else if (type == 'S') strftime(buf, sizeof(buf), "%S", &timeinfo);
     return String(buf);
+}
+
+void syncTime() {
+    configTime(0, 0, Net::NTP_SERVER);
+    setenv("TZ", Net::TIME_ZONE, 1);
+    tzset();
 }
 
 // ==========================================
@@ -492,7 +495,6 @@ void runClock(bool k0Pressed) {
         tft.fillScreen(Colors::BG);
         drawAlarmIcon();
         for (int i = 0; i < ui.MENU_ITEMS; i++) {
-             // Redraw menu helper inline here for simplicity
              int rowCenterY = 60 + i * 35; 
              int boxY = rowCenterY - 14; int boxH = 28; int boxW = 300; int boxX = 10;
              int textY = rowCenterY - 7; int textX = 24;
@@ -534,8 +536,6 @@ void drawMenu(bool fullRedraw) {
 
 void runMenu(int encStep, bool encPressed, bool k0Pressed) {
     if (encStep != 0) {
-        // ... (keep existing scroll logic) ...
-        // Redraw old selection as unselected
         int oldIndex = ui.menuIndex;
         int rowCenterY = 60 + oldIndex * 35;
         tft.fillRect(10, rowCenterY - 14, 300, 28, Colors::BG);
@@ -546,7 +546,6 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
         if (ui.menuIndex < 0) ui.menuIndex = ui.MENU_ITEMS - 1;
         if (ui.menuIndex >= ui.MENU_ITEMS) ui.menuIndex = 0;
 
-        // Redraw new selection
         int newIndex = ui.menuIndex;
         rowCenterY = 60 + newIndex * 35;
         tft.fillRect(10, rowCenterY - 14, 300, 28, Colors::ACCENT);
@@ -556,7 +555,6 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
     
     if (encPressed) {
         if (ui.menuIndex == 0) { // Monitor
-             // ... (keep existing) ...
              ui.currentMode = MODE_CLOCK;
              initClockStaticUI();
              ui.prevTimeStr = "";
@@ -564,40 +562,30 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
              drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
              drawEnvDynamic();
         } else if (ui.menuIndex == 1) { // Pomodoro
-             // ... (keep existing) ...
              ui.currentMode = MODE_POMODORO;
              pomo.state = POMO_SET_WORK;
              pomo.prevVal = -1;
              tft.fillScreen(Colors::BG);
              tft.setTextSize(2); tft.setTextColor(Colors::LIGHT, Colors::BG);
              printCenteredText("Set Work", 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
-             updatePomodoroValue(settings.pomoWorkMin);
         } else if (ui.menuIndex == 2) { // Alarm
-             // ... (keep existing) ...
              ui.currentMode = MODE_ALARM;
              ui.alarmSelectedField = 0;
              tft.fillScreen(Colors::BG);
              drawAlarmIcon();
         } else if (ui.menuIndex == 3) { // DVD
-             // ... (keep existing) ...
              ui.currentMode = MODE_DVD;
              ui.dvdInited = false;
         } else if (ui.menuIndex == 4) { // Settings
-             // === FIX APPLIED HERE ===
              ui.currentMode = MODE_SETTINGS;
              ui.settingsSelectedRow = 0; 
              ui.settingsEditMode = false;
-             ui.settingsInited = false; // Tells runSettings to draw the screen
-             
-             setLedState(false); // Explicitly ensure LED is OFF
-             
-             // Removed the tft.fillScreen and other drawing calls here
-             // to let runSettings handle it cleanly.
+             ui.settingsInited = false; 
+             setLedState(false); 
         }
     }
     
     if (k0Pressed) {
-        // ... (keep existing) ...
         ui.currentMode = MODE_CLOCK;
         initClockStaticUI();
         ui.prevTimeStr = "";
@@ -605,6 +593,10 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
         drawEnvDynamic();
     }
 }
+
+// --- POMODORO HELPERS ---
+void updatePomodoroValue(int value);
+void drawPomodoroScreen(bool forceStatic);
 
 // --- POMODORO SCREEN ---
 
@@ -675,7 +667,6 @@ void drawPomodoroScreen(bool forceStatic) {
     char buf[8]; sprintf(buf, "%02d:%02d", rmMin, rmSec);
     String timeStr = String(buf);
     
-    // Check color change need (Paused vs Running)
     static uint16_t prevTimeColor = 0;
     uint16_t timeColor = (pomo.state == POMO_PAUSED) ? Colors::LIGHT : ST77XX_WHITE;
 
@@ -701,7 +692,6 @@ void updatePomodoroValue(int value) {
 }
 
 void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
-    // Setup Phases
     if (pomo.state < POMO_READY) {
         if (encStep != 0) {
             if (pomo.state == POMO_SET_WORK) {
@@ -744,9 +734,7 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
                 drawPomodoroScreen(true);
             }
         }
-    } 
-    // Running Phases
-    else if (pomo.state == POMO_RUNNING || pomo.state == POMO_PAUSED) {
+    } else if (pomo.state == POMO_RUNNING || pomo.state == POMO_PAUSED) {
         if (encPressed) {
             if (pomo.state == POMO_RUNNING) {
                 pomo.state = POMO_PAUSED;
@@ -792,9 +780,7 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
         } else {
             drawPomodoroScreen(false);
         }
-    } 
-    // Done Phase
-    else if (pomo.state == POMO_DONE) {
+    } else if (pomo.state == POMO_DONE) {
         if (encPressed) {
             pomo.state = POMO_SET_WORK;
             pomo.prevVal = -1;
@@ -873,8 +859,6 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
     }
 
     bool changed = false;
-    // Initial Draw if needed (hacky check: assume if screen is blank we need draw)
-    // In strict mode, we'd pass a "firstRun" flag. For now, rely on change or menu exit.
     static int lastMode = -1;
     if (lastMode != MODE_ALARM) { 
         drawAlarmScreen(true); 
@@ -901,7 +885,7 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
     if (k0Pressed) {
         saveSettings(); 
         ui.currentMode = MODE_MENU;
-        lastMode = MODE_MENU; // Reset tracker
+        lastMode = MODE_MENU; 
         drawMenu(true);
         return;
     }
@@ -983,97 +967,167 @@ void drawSettingsScreen(bool full) {
 
     int barX = 40; int barW = 240; int barH = 15;
     
-    // --- Determine Colors ---
-    // Default to White
     uint16_t ledTextColor = ST77XX_WHITE;
     uint16_t spkTextColor = ST77XX_WHITE;
+    uint16_t wifiTextColor = ST77XX_WHITE;
+    uint16_t resetTextColor = ST77XX_WHITE;
 
-    // Logic: Blue for Navigation (Scrolling), Green for Action (Editing)
     if (ui.settingsSelectedRow == 0) {
-        // LED Row is selected
         ledTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
-    } else {
-        // Speaker Row is selected
+    } else if (ui.settingsSelectedRow == 1) {
         spkTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
+    } else if (ui.settingsSelectedRow == 2) {
+        wifiTextColor = Colors::BLUE; 
+    } else if (ui.settingsSelectedRow == 3) {
+        resetTextColor = ST77XX_RED; // RED for destructive action
     }
     
-    // --- Draw LED Section ---
-    int yLed = 80;
+    // --- Draw LED Section (y=40) ---
+    int yLed = 40;
     tft.setTextSize(2);
     tft.setTextColor(ledTextColor, Colors::BG);
     tft.setCursor(barX, yLed - 20);
     tft.print("LED Brightness");
     drawBarItem(barX, yLed, barW, barH, settings.ledBrightness, ui.prevLedBarW);
 
-    // --- Draw Speaker Section ---
-    int ySpk = 160;
+    // --- Draw Speaker Section (y=90) ---
+    int ySpk = 90;
     tft.setTextColor(spkTextColor, Colors::BG);
     tft.setCursor(barX, ySpk - 20);
     tft.print("Speaker Volume");
     drawBarItem(barX, ySpk, barW, barH, settings.speakerVol, ui.prevSpkBarW);
+
+    // --- Draw WiFi Setup Section (y=140) ---
+    int yWifi = 140;
+    if (ui.settingsSelectedRow == 2) {
+        tft.fillRoundRect(barX, yWifi, barW, 25, 4, Colors::BLUE);
+        tft.setTextColor(Colors::BG);
+    } else {
+        tft.fillRoundRect(barX, yWifi, barW, 25, 4, Colors::DARK);
+        tft.setTextColor(ST77XX_WHITE);
+    }
+    String wifiText = "Setup WiFi";
+    int16_t bx, by; uint16_t w, h;
+    tft.getTextBounds(wifiText, 0, 0, &bx, &by, &w, &h);
+    tft.setCursor(barX + (barW-w)/2, yWifi + (25-h)/2);
+    tft.print(wifiText);
+
+    // --- Draw Reset WiFi Section (y=190) ---
+    int yReset = 190;
+    if (ui.settingsSelectedRow == 3) {
+        tft.fillRoundRect(barX, yReset, barW, 25, 4, ST77XX_RED);
+        tft.setTextColor(Colors::BG);
+    } else {
+        tft.fillRoundRect(barX, yReset, barW, 25, 4, Colors::DARK);
+        tft.setTextColor(ST77XX_WHITE);
+    }
+    String resetText = "Reset WiFi";
+    tft.getTextBounds(resetText, 0, 0, &bx, &by, &w, &h);
+    tft.setCursor(barX + (barW-w)/2, yReset + (25-h)/2);
+    tft.print(resetText);
 }
 
 void runSettings(int encStep, bool encPressed, bool k0Pressed) {
-    // Exit Logic
     if (k0Pressed) {
         saveSettings(); 
-        setLedState(false); // Ensure LED is off when leaving
-        
+        setLedState(false); 
         ui.settingsEditMode = false;
         ui.settingsSelectedRow = 0;
-        
         ui.currentMode = MODE_MENU;
         drawMenu(true);
         return;
     }
     
-    // === FIX: INITIAL DRAW LOGIC ===
     if (!ui.settingsInited) {
         drawSettingsScreen(true);
         ui.settingsInited = true;
     }
 
-    // --- Handle Encoder Click (Toggle Edit Mode) ---
     if (encPressed) {
-        ui.settingsEditMode = !ui.settingsEditMode;
-        
-        // LED CONTROL: Only turn on if we are Editing Row 0 (LED)
-        if (ui.settingsEditMode && ui.settingsSelectedRow == 0) {
-            setLedState(true);
-        } else {
-            setLedState(false);
+        if (ui.settingsSelectedRow == 2) {
+            // ENTER WIFI SETUP MODE
+            ui.currentMode = MODE_WIFI_SETUP;
+            ui.wifiSetupInited = false;
         }
-
-        // === FIX: SILENT ENTER (No Tone) ===
-        // Sound removed
-        
-        drawSettingsScreen(false); 
+        else if (ui.settingsSelectedRow == 3) {
+            // == RESET WIFI & REBOOT ==
+            tft.fillScreen(Colors::BG);
+            tft.setTextColor(ST77XX_RED);
+            tft.setTextSize(3);
+            tft.setCursor(20, 100);
+            tft.print("RESETTING...");
+            playSystemTone(1000, 500);
+            delay(1000);
+            wm.resetSettings(); // Clear Creds
+            ESP.restart();      // Reboot to fresh state
+        }
+        else {
+            ui.settingsEditMode = !ui.settingsEditMode;
+            if (ui.settingsEditMode && ui.settingsSelectedRow == 0) setLedState(true);
+            else setLedState(false);
+            drawSettingsScreen(false); 
+        }
     }
 
-    // --- Handle Encoder Rotation ---
     if (encStep != 0) {
         if (ui.settingsEditMode) {
-            // === EDIT MODE (Green Text) ===
             if (ui.settingsSelectedRow == 0) {
-                // Change Brightness
                 settings.ledBrightness = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
-                setLedState(true); // Keep LED on while changing brightness
-            } else {
-                // Change Volume
+                setLedState(true); 
+            } else if (ui.settingsSelectedRow == 1) {
                 settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
-                playSystemTone(2000, 20); // Keep volume click for feedback
+                playSystemTone(2000, 20); 
             }
         } else {
-            // === NAV MODE (Blue Text) ===
             setLedState(false); 
-
-            // Scroll Selection
             ui.settingsSelectedRow += encStep;
-            if (ui.settingsSelectedRow < 0) ui.settingsSelectedRow = 1;
-            if (ui.settingsSelectedRow > 1) ui.settingsSelectedRow = 0;
+            if (ui.settingsSelectedRow < 0) ui.settingsSelectedRow = ui.SETTINGS_ROWS - 1;
+            if (ui.settingsSelectedRow >= ui.SETTINGS_ROWS) ui.settingsSelectedRow = 0;
         }
-        
         drawSettingsScreen(false); 
+    }
+}
+
+// --- WIFI SETUP MODE ---
+
+void runWiFiSetup(bool k0Pressed) {
+    if (!ui.wifiSetupInited) {
+        tft.fillScreen(Colors::BG);
+        
+        tft.setTextColor(ST77XX_WHITE);
+        tft.setCursor(20, 100); tft.print("AP: CyberClockSetup");
+        tft.setCursor(20, 120); tft.print("IP: 192.168.4.1");
+        
+        // Non-blocking mode
+        wm.setConfigPortalBlocking(false);
+        wm.startConfigPortal("CyberClockSetup");
+        
+        ui.wifiSetupInited = true;
+    }
+
+    // Process WiFiManager
+    wm.process();
+
+    // Check for Cancel
+    if (k0Pressed) {
+        wm.stopConfigPortal();
+        ui.currentMode = MODE_SETTINGS;
+        ui.settingsInited = false; // Force redraw of settings
+        return;
+    }
+
+    // Check for Success
+    if (WiFi.status() == WL_CONNECTED) {
+        tft.fillScreen(Colors::BG);
+        tft.setTextColor(Colors::GREEN); tft.setTextSize(2);
+        tft.setCursor(20, 100); tft.print("Connected!");
+        delay(100);
+        
+        syncTime();
+        
+        wm.stopConfigPortal();
+        ui.currentMode = MODE_SETTINGS;
+        ui.settingsInited = false;
     }
 }
 
@@ -1095,6 +1149,8 @@ void checkAlarmTrigger() {
 }
 
 void updateAlertStateAndLED() {
+    if (ui.currentMode == MODE_WIFI_SETUP) return; 
+    
     if (ui.alarmRinging) ui.currentAlert = ALERT_ALARM;
     else if (env.eco2 > 1800) ui.currentAlert = ALERT_CO2;
     else ui.currentAlert = ALERT_NONE;
@@ -1123,36 +1179,44 @@ void updateAlertStateAndLED() {
     }
 }
 
-void connectWiFiAndSyncTime() {
+void checkStartupWiFi() {
     tft.fillScreen(Colors::BG);
-    tft.setTextColor(Colors::LIGHT); tft.setTextSize(2);
-    tft.setCursor(20, 100); tft.print("Connecting WiFi");
+    tft.setTextColor(ST77XX_WHITE); tft.setTextSize(2);
+    tft.setCursor(20, 100); tft.print("Checking WiFi...");
+
+    // Disable the auto-AP feature.
+    wm.setEnableConfigPortal(false);
     
-    WiFi.begin(Net::SSID, Net::PASS);
-
-    uint8_t retry = 0;
-    while (WiFi.status() != WL_CONNECTED && retry < 20) {
-        delay(300); tft.print("."); retry++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        tft.fillScreen(Colors::BG);
-        tft.setCursor(20, 100); tft.print("Syncing time...");
-        configTime(0, 0, Net::NTP_SERVER);
-        setenv("TZ", Net::TIME_ZONE, 1);
-        tzset();
-
-        struct tm timeinfo;
-        int retrySync = 0;
-        while (!getLocalTime(&timeinfo) && retrySync < 10) {
-            tft.print("."); delay(500); retrySync++;
-        }
+    // Attempt connection
+    bool connected = wm.autoConnect(); 
+    
+    if (connected) {
+        tft.setTextColor(Colors::GREEN);
+        tft.setCursor(20, 130); tft.print("Connected!");
         delay(500);
+        syncTime();
+        
+        struct tm timeinfo;
+        int retries = 0;
+        while (!getLocalTime(&timeinfo) && retries < 5) {
+            delay(500); retries++;
+        }
     } else {
-        tft.fillScreen(Colors::BG);
-        tft.setCursor(20, 100); tft.setTextColor(ST77XX_RED);
-        tft.print("WiFi FAILED!");
+        tft.setTextColor(ST77XX_RED);
+        tft.setCursor(20, 130); tft.print("Offline Mode");
         delay(1000);
+        
+        // Manual Time Init
+        struct tm tm;
+        tm.tm_year = 2024 - 1900;
+        tm.tm_mon = 0;
+        tm.tm_mday = 1;
+        tm.tm_hour = 12;
+        tm.tm_min = 0;
+        tm.tm_sec = 0;
+        time_t t = mktime(&tm);
+        struct timeval now = { .tv_sec = t, .tv_usec = 0 };
+        settimeofday(&now, NULL);
     }
 }
 
@@ -1188,7 +1252,7 @@ void setup() {
     tft.invertDisplay(false);
     tft.fillScreen(Colors::BG);
 
-    connectWiFiAndSyncTime();
+    checkStartupWiFi();
 
     if (!aht.begin()) Serial.println("AHT21 not found");
     if (!ens160.begin()) Serial.println("ENS160 begin FAIL");
@@ -1203,13 +1267,6 @@ void setup() {
 }
 
 void loop() {
-    // WiFi Check
-    static unsigned long lastWifiCheck = 0;
-    if (millis() - lastWifiCheck > 10000) {
-        lastWifiCheck = millis();
-        if (WiFi.status() != WL_CONNECTED) WiFi.begin(Net::SSID, Net::PASS);
-    }
-
     // Input
     int encStep = readEncoderStep();
     bool encPressed = checkButtonPressed(Pins::ENC_BTN, input.lastEncBtn);
@@ -1221,11 +1278,12 @@ void loop() {
 
     // Mode Dispatch
     switch (ui.currentMode) {
-        case MODE_MENU:     runMenu(encStep, encPressed, k0Pressed); break;
-        case MODE_CLOCK:    runClock(k0Pressed); break;
-        case MODE_POMODORO: runPomodoro(encStep, encPressed, k0Pressed); break;
-        case MODE_ALARM:    runAlarm(encStep, encPressed, k0Pressed); break;
-        case MODE_DVD:      runDvd(encStep, encPressed, k0Pressed); break;
-        case MODE_SETTINGS: runSettings(encStep, encPressed, k0Pressed); break;
+        case MODE_MENU:       runMenu(encStep, encPressed, k0Pressed); break;
+        case MODE_CLOCK:      runClock(k0Pressed); break;
+        case MODE_POMODORO:   runPomodoro(encStep, encPressed, k0Pressed); break;
+        case MODE_ALARM:      runAlarm(encStep, encPressed, k0Pressed); break;
+        case MODE_DVD:        runDvd(encStep, encPressed, k0Pressed); break;
+        case MODE_SETTINGS:   runSettings(encStep, encPressed, k0Pressed); break;
+        case MODE_WIFI_SETUP: runWiFiSetup(k0Pressed); break;
     }
 }
