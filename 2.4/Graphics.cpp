@@ -89,7 +89,7 @@ void drawHistoryGraph() {
         // Simple scaling logic kept same
         int yT = map(constrain(env.hTemp[idx]/10, 0, 50), 0, 50, 88, 2);
         int yH = map(constrain(env.hHum[idx], 0, 100), 0, 100, 88, 2);
-        int yV = map(constrain(env.hTVOC[idx], 0, 750), 0, 600, 88, 2);
+        int yV = map(constrain(env.hTVOC[idx], 0, 1500), 0, 1500, 88, 2);
         int yC = map(constrain(env.hCO2[idx], 0, 2000), 0, 2000, 88, 2);
         
         if (i > 0) {
@@ -125,23 +125,16 @@ void drawClockTime(String hourStr, String minStr, String secStr) {
 }
 
 void drawEnvDynamic() {
-    int clearH = 18; 
-    int w_left  = (Layout::GRID_MID_X - Layout::GRID_L) - 2;
-    int w_right = (Layout::GRID_R - Layout::GRID_MID_X) - 2;
-    tft.fillRect(Layout::GRID_L + 1, Layout::VAL_TOP_Y, w_left, clearH, Colors::BG);
-    tft.fillRect(Layout::GRID_MID_X + 1, Layout::VAL_TOP_Y, w_right, clearH, Colors::BG);
-    tft.fillRect(Layout::GRID_L + 1, Layout::VAL_BOT_Y, w_left, clearH, Colors::BG);
-    tft.fillRect(Layout::GRID_MID_X + 1, Layout::VAL_BOT_Y, w_right, clearH, Colors::BG);
-    
-    char buf[16];
-    sprintf(buf, "%2.0f%%", env.hum);
-    UI::textCenteredX(String(buf), Layout::GRID_L, Layout::GRID_MID_X, Layout::VAL_TOP_Y, 2, Colors::HUM);
-    sprintf(buf, "%2.1fC", env.temp);
-    UI::textCenteredX(String(buf), Layout::GRID_MID_X, Layout::GRID_R, Layout::VAL_TOP_Y, 2, Colors::TEMP);
-    sprintf(buf, "%d", env.tvoc);
-    UI::textCenteredX(String(buf), Layout::GRID_L, Layout::GRID_MID_X, Layout::VAL_BOT_Y, 2, Colors::TVOC);
-    sprintf(buf, "%d", env.eco2);
-    UI::textCenteredX(String(buf), Layout::GRID_MID_X, Layout::GRID_R, Layout::VAL_BOT_Y, 2, Colors::CO2);
+    char buf[32];
+
+    sprintf(buf, " %2.0f%% ", env.hum);
+    UI::textCenteredX(String(buf), Layout::GRID_L, Layout::GRID_MID_X, Layout::VAL_TOP_Y, 2, Colors::HUM, Colors::BG);
+    sprintf(buf, " %2.1fC ", env.temp);
+    UI::textCenteredX(String(buf), Layout::GRID_MID_X, Layout::GRID_R, Layout::VAL_TOP_Y, 2, Colors::TEMP, Colors::BG);
+    sprintf(buf, "  %d  ", env.tvoc);
+    UI::textCenteredX(String(buf), Layout::GRID_L, Layout::GRID_MID_X, Layout::VAL_BOT_Y, 2, Colors::TVOC, Colors::BG);
+    sprintf(buf, "  %d  ", env.eco2);
+    UI::textCenteredX(String(buf), Layout::GRID_MID_X, Layout::GRID_R, Layout::VAL_BOT_Y, 2, Colors::CO2, Colors::BG);
 }
 
 void drawGenericList(const char* items[], int count, int selectedIndex, int lastIndex, bool fullRedraw) {

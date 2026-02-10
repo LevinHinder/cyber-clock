@@ -7,7 +7,8 @@
 #include "Globals.h"
 #include "Hardware.h"
 #include "Graphics.h"
-#include "Modes.h"
+#include "StateManager.h"
+#include "AppModes.h"
 #include "InputManager.h"
 
 void setup() {
@@ -30,10 +31,7 @@ void setup() {
     if (!ens160.begin()) Serial.println("ENS160 begin FAIL");
     else ens160.setMode(ENS160_OPMODE_STD);
     
-    updateEnvSensors(true);
-    initClockStaticUI();
-    drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
-    drawEnvDynamic();
+    State.switchMode(new ClockMode());
 }
 
 void loop() {
@@ -41,16 +39,14 @@ void loop() {
     checkAlarmTrigger();
     updateAlertStateAndLED();
 
-    switch (ui.currentMode) {
-        case MODE_MENU:                 runMenu(); break;
-        case MODE_CLOCK:                runClock(); break;
-        case MODE_POMODORO:             runPomodoro(); break;
-        case MODE_ALARM:                runAlarm(); break;
-        case MODE_DVD:                  runDvd(); break;
-        case MODE_SETTINGS:             runSettingsMenu(); break;
-        case MODE_SETTINGS_EDIT:        runSettingsEdit(); break;
-        case MODE_WIFI_MENU:            runWiFiMenu(); break;
-        case MODE_WIFI_SETUP:           runWiFiSetup(); break;
-        case MODE_WIFI_RESET_CONFIRM:   runWiFiResetConfirm(); break;
+    if (ui.alarmRinging) {
+        static bool wasRinging = false;
+        if (!wasRinging) {
+             State.switchMode(new AlarmMode(true));
+             wasRinging = true;
+        }
+        if (!ui.alarmRinging) wasRinging = false; 
     }
+
+    State.update();
 }
