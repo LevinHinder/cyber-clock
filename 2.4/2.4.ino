@@ -82,7 +82,17 @@ namespace Layout {
 //               DATA STRUCTURES
 // ==========================================
 
-enum UIMode { MODE_MENU = 0, MODE_CLOCK, MODE_POMODORO, MODE_ALARM, MODE_DVD, MODE_SETTINGS, MODE_WIFI_SETUP };
+enum UIMode { 
+    MODE_MENU = 0, 
+    MODE_CLOCK, 
+    MODE_POMODORO, 
+    MODE_ALARM, 
+    MODE_DVD, 
+    MODE_SETTINGS,      // The list of settings
+    MODE_SETTINGS_EDIT, // The page to change a value
+    MODE_WIFI_SETUP 
+};
+
 enum AlertLevel { ALERT_NONE = 0, ALERT_CO2, ALERT_ALARM };
 
 enum PomodoroState { POMO_SET_WORK = 0, POMO_SET_SHORT, POMO_SET_LONG, POMO_SET_CYCLES, POMO_READY, POMO_RUNNING, POMO_PAUSED, POMO_DONE };
@@ -141,10 +151,19 @@ struct PomodoroContext {
 struct UIContext {
     UIMode currentMode = MODE_CLOCK;
     
-    // Menu
+    // Main Menu
     int menuIndex = 0;
     static const int MENU_ITEMS = 5; 
     const char* menuLabels[MENU_ITEMS] = { "Monitor", "Pomodoro", "Alarm", "DVD", "Settings" };
+
+    // Settings Menu
+    int settingsIndex = 0;
+    static const int SETTINGS_ITEMS = 5;
+    const char* settingsLabels[SETTINGS_ITEMS] = { "LED Brightness", "Speaker Volume", "Graph Range", "Setup WiFi", "Reset WiFi" };
+    
+    // Settings Editor
+    int editId = -1; // 0=LED, 1=Spk, 2=Graph
+    int prevVal = -1; // To detect changes for redraw
 
     // Alarm UI
     bool alarmRinging = false;
@@ -282,6 +301,47 @@ void saveSettings() {
     prefs.putInt("p_cycl", settings.pomoCycles);
     prefs.end();
 }
+
+// Added 'int lastIndex' to parameters
+void drawGenericList(const char* items[], int count, int selectedIndex, int lastIndex, bool fullRedraw) {
+    if (fullRedraw) {
+        tft.fillScreen(Colors::BG);
+        drawAlarmIcon();
+    }
+    
+    for (int i = 0; i < count; i++) {
+        int rowH = 35;
+        int startY = 50; 
+        int rowCenterY = startY + i * rowH; 
+        
+        int boxY = rowCenterY - 14; 
+        int boxH = 28; 
+        int boxW = 300; 
+        int boxX = 10;
+        int textY = rowCenterY - 7; 
+        int textX = 24;
+
+        // FIXED LOGIC: 
+        // We redraw if:
+        // 1. It's a full redraw
+        // 2. This is the new selected item (to highlight it)
+        // 3. This is the OLD selected item (to un-highlight it)
+        if (fullRedraw || i == selectedIndex || i == lastIndex) {
+             bool selected = (i == selectedIndex);
+             if (selected) {
+                 tft.fillRect(boxX, boxY, boxW, boxH, Colors::ACCENT);
+                 tft.setTextColor(Colors::BG);
+             } else {
+                 tft.fillRect(boxX, boxY, boxW, boxH, Colors::BG);
+                 tft.setTextColor(ST77XX_WHITE);
+             }
+             tft.setTextSize(2); 
+             tft.setCursor(textX, textY); 
+             tft.print(items[i]);
+        }
+    }
+}
+
 
 // --- POMODORO HELPERS ---
 void updatePomodoroValue(int value);
@@ -532,21 +592,6 @@ void runClock(bool k0Pressed) {
     }
     if (k0Pressed) {
         ui.currentMode = MODE_MENU;
-        tft.fillScreen(Colors::BG);
-        drawAlarmIcon();
-        for (int i = 0; i < ui.MENU_ITEMS; i++) {
-             int rowCenterY = 60 + i * 35; 
-             int boxY = rowCenterY - 14; int boxH = 28; int boxW = 300; int boxX = 10;
-             int textY = rowCenterY - 7; int textX = 24;
-             if (i == ui.menuIndex) {
-                 tft.fillRect(boxX, boxY, boxW, boxH, Colors::ACCENT);
-                 tft.setTextColor(Colors::BG);
-             } else {
-                 tft.fillRect(boxX, boxY, boxW, boxH, Colors::BG);
-                 tft.setTextColor(ST77XX_WHITE);
-             }
-             tft.setTextSize(2); tft.setCursor(textX, textY); tft.print(ui.menuLabels[i]);
-        }
     }
 }
 
@@ -575,25 +620,27 @@ void drawMenu(bool fullRedraw) {
 }
 
 void runMenu(int encStep, bool encPressed, bool k0Pressed) {
-    if (encStep != 0) {
-        int oldIndex = ui.menuIndex;
-        int rowCenterY = 60 + oldIndex * 35;
-        tft.fillRect(10, rowCenterY - 14, 300, 28, Colors::BG);
-        tft.setTextColor(ST77XX_WHITE);
-        tft.setTextSize(2); tft.setCursor(24, rowCenterY - 7); tft.print(ui.menuLabels[oldIndex]);
+    static int lastMenuIndex = -1;
+    
+    // Draw only if index changed
+    if (ui.menuIndex != lastMenuIndex) {
+        // Pass lastMenuIndex to fix the scrolling highlight bug too
+        drawGenericList(ui.menuLabels, ui.MENU_ITEMS, ui.menuIndex, lastMenuIndex, lastMenuIndex == -1);
+        lastMenuIndex = ui.menuIndex;
+    }
 
+    if (encStep != 0) {
+        lastMenuIndex = ui.menuIndex; // Save old index
         ui.menuIndex += encStep;
         if (ui.menuIndex < 0) ui.menuIndex = ui.MENU_ITEMS - 1;
         if (ui.menuIndex >= ui.MENU_ITEMS) ui.menuIndex = 0;
-
-        int newIndex = ui.menuIndex;
-        rowCenterY = 60 + newIndex * 35;
-        tft.fillRect(10, rowCenterY - 14, 300, 28, Colors::ACCENT);
-        tft.setTextColor(Colors::BG);
-        tft.setTextSize(2); tft.setCursor(24, rowCenterY - 7); tft.print(ui.menuLabels[newIndex]);
+        
+        // Use optimized draw
+        drawGenericList(ui.menuLabels, ui.MENU_ITEMS, ui.menuIndex, lastMenuIndex, false);
     }
     
     if (encPressed) {
+        lastMenuIndex = -1; // Reset so it redraws when we come back
         if (ui.menuIndex == 0) { // Monitor
              ui.currentMode = MODE_CLOCK;
              initClockStaticUI();
@@ -606,10 +653,9 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
              pomo.state = POMO_SET_WORK;
              pomo.prevVal = -1;
              tft.fillScreen(Colors::BG);
-             tft.setTextSize(2); tft.setTextColor(Colors::LIGHT, Colors::BG);
              printCenteredText("Set Work", 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
              updatePomodoroValue(settings.pomoWorkMin);
-            } else if (ui.menuIndex == 2) { // Alarm
+        } else if (ui.menuIndex == 2) { // Alarm
              ui.currentMode = MODE_ALARM;
              ui.alarmSelectedField = 0;
              tft.fillScreen(Colors::BG);
@@ -619,19 +665,14 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
              ui.dvdInited = false;
         } else if (ui.menuIndex == 4) { // Settings
              ui.currentMode = MODE_SETTINGS;
-             ui.settingsSelectedRow = 0; 
-             ui.settingsEditMode = false;
-             ui.settingsInited = false; 
-             setLedState(false); 
+             ui.settingsIndex = 0;
         }
     }
     
     if (k0Pressed) {
+        lastMenuIndex = -1;
         ui.currentMode = MODE_CLOCK;
         initClockStaticUI();
-        ui.prevTimeStr = "";
-        drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
-        drawEnvDynamic();
     }
 }
 
@@ -842,7 +883,6 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
     if (k0Pressed) {
         saveSettings(); 
         ui.currentMode = MODE_MENU;
-        drawMenu(true);
     }
 }
 
@@ -935,7 +975,6 @@ void runAlarm(int encStep, bool encPressed, bool k0Pressed) {
         saveSettings(); 
         ui.currentMode = MODE_MENU;
         lastMode = MODE_MENU; 
-        drawMenu(true);
         return;
     }
     if (changed) {
@@ -970,7 +1009,6 @@ void runDvd(int encStep, bool encPressed, bool k0Pressed) {
     if (k0Pressed) {
         ui.dvdInited = false;
         ui.currentMode = MODE_MENU;
-        drawMenu(true);
         return;
     }
     
@@ -1091,28 +1129,55 @@ void drawSettingsScreen(bool full) {
     tft.print(resetText);
 }
 
-void runSettings(int encStep, bool encPressed, bool k0Pressed) {
-    if (k0Pressed) {
-        saveSettings(); 
-        setLedState(false); 
-        ui.settingsEditMode = false;
-        ui.settingsSelectedRow = 0;
-        ui.currentMode = MODE_MENU;
-        drawMenu(true);
-        return;
-    }
+void runSettingsMenu(int encStep, bool encPressed, bool k0Pressed) {
+    static int lastIndex = -1;
     
-    if (!ui.settingsInited) {
-        drawSettingsScreen(true);
-        ui.settingsInited = true;
+    // 1. Draw List Logic
+    if (ui.settingsIndex != lastIndex) {
+        drawGenericList(ui.settingsLabels, ui.SETTINGS_ITEMS, ui.settingsIndex, lastIndex, lastIndex == -1);
+        lastIndex = ui.settingsIndex;
     }
 
+    // 2. Navigation
+    if (encStep != 0) {
+        lastIndex = ui.settingsIndex; 
+        ui.settingsIndex += encStep;
+        if (ui.settingsIndex < 0) ui.settingsIndex = ui.SETTINGS_ITEMS - 1;
+        if (ui.settingsIndex >= ui.SETTINGS_ITEMS) ui.settingsIndex = 0;
+        
+        drawGenericList(ui.settingsLabels, ui.SETTINGS_ITEMS, ui.settingsIndex, lastIndex, false);
+        lastIndex = ui.settingsIndex; // Update immediately after draw
+    }
+
+    // 3. Selection
     if (encPressed) {
-        if (ui.settingsSelectedRow == 3) { // WiFi Setup (Index shifted due to new row)
+        // === FIX HERE: Reset lastIndex so it redraws when we return ===
+        lastIndex = -1; 
+        
+        if (ui.settingsIndex == 0) { // LED
+            ui.currentMode = MODE_SETTINGS_EDIT;
+            ui.editId = 0;
+            ui.prevVal = -1; 
+            setLedState(true);
+            tft.fillScreen(Colors::BG);
+        } 
+        else if (ui.settingsIndex == 1) { // Speaker
+            ui.currentMode = MODE_SETTINGS_EDIT;
+            ui.editId = 1;
+            ui.prevVal = -1;
+            tft.fillScreen(Colors::BG);
+        }
+        else if (ui.settingsIndex == 2) { // Graph Range
+            ui.currentMode = MODE_SETTINGS_EDIT;
+            ui.editId = 2;
+            ui.prevVal = -1;
+            tft.fillScreen(Colors::BG);
+        }
+        else if (ui.settingsIndex == 3) { // WiFi Setup
             ui.currentMode = MODE_WIFI_SETUP;
             ui.wifiSetupInited = false;
         }
-        else if (ui.settingsSelectedRow == 4) { // Reset (Index shifted)
+        else if (ui.settingsIndex == 4) { // Reset WiFi
             tft.fillScreen(Colors::BG);
             tft.setTextColor(ST77XX_RED);
             tft.setTextSize(3);
@@ -1122,51 +1187,101 @@ void runSettings(int encStep, bool encPressed, bool k0Pressed) {
             wm.resetSettings();
             ESP.restart();
         }
-        else {
-            ui.settingsEditMode = !ui.settingsEditMode;
-            // Visual feedback for edit mode
-            drawSettingsScreen(false); 
+    }
+
+    // 4. Exit
+    if (k0Pressed) {
+        saveSettings();
+        lastIndex = -1; 
+        ui.currentMode = MODE_MENU;
+        // No drawing here either, runMenu will handle it
+    }
+}
+
+void runSettingsEdit(int encStep, bool encPressed, bool k0Pressed) {
+    // 1. Handle Value Changes
+    bool valChanged = false;
+    
+    if (ui.editId == 0) { // LED
+        if (encStep != 0) {
+            settings.ledBrightness = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
+            setLedState(true); // Preview
+            valChanged = true;
+        }
+    } 
+    else if (ui.editId == 1) { // Speaker
+        if (encStep != 0) {
+            settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
+            playSystemTone(2000, 20); // Preview beep
+            valChanged = true;
+        }
+    }
+    else if (ui.editId == 2) { // Graph Range
+        if (encStep != 0) {
+            int curIdx = 0;
+            for(int i=0; i<GRAPH_RANGES_COUNT; i++) {
+                if (settings.graphDuration == GRAPH_RANGES_MIN[i]) { curIdx = i; break; }
+            }
+            curIdx = constrain(curIdx + encStep, 0, GRAPH_RANGES_COUNT - 1);
+            settings.graphDuration = GRAPH_RANGES_MIN[curIdx];
+            valChanged = true;
         }
     }
 
-    if (encStep != 0) {
-        if (ui.settingsEditMode) {
-            if (ui.settingsSelectedRow == 0) {
-                settings.ledBrightness = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
-                setLedState(true); 
-            } else if (ui.settingsSelectedRow == 1) {
-                settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
-                playSystemTone(2000, 20); 
-            } else if (ui.settingsSelectedRow == 2) {
-                // === GRAPH DURATION LOGIC ===
-                // Find current index
-                int curIdx = 0;
-                for(int i=0; i<GRAPH_RANGES_COUNT; i++) {
-                    if (settings.graphDuration == GRAPH_RANGES_MIN[i]) { curIdx = i; break; }
-                }
-                
-                // Change index
-                curIdx += encStep;
-                if (curIdx < 0) curIdx = 0;
-                if (curIdx >= GRAPH_RANGES_COUNT) curIdx = GRAPH_RANGES_COUNT - 1;
-                
-                // Set new minutes
-                int newDur = GRAPH_RANGES_MIN[curIdx];
-                
-                // If duration changed, clear history to avoid ugly graph scaling
-                if (newDur != settings.graphDuration) {
-                     settings.graphDuration = newDur;
-                     // Optional: clear history so graph restarts fresh
-                     // for(int i=0; i<EnvData::HIST_LEN; i++) { env.hTemp[i]=0; env.hHum[i]=0; }
-                }
-            }
-        } else {
-            setLedState(false); 
-            ui.settingsSelectedRow += encStep;
-            if (ui.settingsSelectedRow < 0) ui.settingsSelectedRow = ui.SETTINGS_ROWS - 1;
-            if (ui.settingsSelectedRow >= ui.SETTINGS_ROWS) ui.settingsSelectedRow = 0;
+    // 2. Draw Screen (Only if changed or first run)
+    if (valChanged || ui.prevVal == -1) {
+        ui.prevVal = 0; // Mark as drawn
+        
+        // Draw Header
+        tft.setTextSize(2);
+        tft.setTextColor(Colors::ACCENT, Colors::BG);
+        String title = "";
+        if (ui.editId == 0) title = "LED Brightness";
+        else if (ui.editId == 1) title = "Speaker Volume";
+        else if (ui.editId == 2) title = "Graph Range";
+        
+        int16_t bx, by; uint16_t bw, bh;
+        tft.getTextBounds(title, 0, 0, &bx, &by, &bw, &bh);
+        tft.setCursor((Screen::WIDTH - bw)/2, 30);
+        tft.print(title);
+
+        // Draw Value
+        tft.setTextSize(5);
+        tft.setTextColor(ST77XX_WHITE, Colors::BG);
+        String valStr = "";
+        
+        if (ui.editId == 0) valStr = String(settings.ledBrightness) + "%";
+        else if (ui.editId == 1) valStr = String(settings.speakerVol) + "%";
+        else if (ui.editId == 2) {
+            if (settings.graphDuration < 60) valStr = String(settings.graphDuration) + "m";
+            else valStr = String(settings.graphDuration/60) + "h";
         }
-        drawSettingsScreen(false); 
+
+        tft.fillRect(0, 80, Screen::WIDTH, 60, Colors::BG);
+        tft.getTextBounds(valStr, 0, 0, &bx, &by, &bw, &bh);
+        tft.setCursor((Screen::WIDTH - bw)/2, 90);
+        tft.print(valStr);
+
+        // Draw Progress Bar
+        if (ui.editId != 2) {
+            int barW = 260; int barH = 15; int barX = (Screen::WIDTH - barW)/2; int barY = 160;
+            tft.drawRect(barX-1, barY-1, barW+2, barH+2, ST77XX_WHITE);
+            tft.fillRect(barX, barY, barW, barH, Colors::DARK);
+            int val = (ui.editId == 0) ? settings.ledBrightness : settings.speakerVol;
+            int fillW = (int)((float)barW * (val / 100.0f));
+            tft.fillRect(barX, barY, fillW, barH, Colors::GREEN);
+        }
+    }
+
+    // 3. Exit (Click or Key0)
+    // === FIX HERE: REMOVE DRAWING COMMANDS ===
+    if (encPressed || k0Pressed) {
+        setLedState(false); 
+        ui.currentMode = MODE_SETTINGS;
+        ui.settingsIndex = ui.editId; 
+        
+        // REMOVED: tft.fillScreen and drawGenericList
+        // The loop will call runSettingsMenu() next, which will handle the drawing.
     }
 }
 
@@ -1239,10 +1354,10 @@ void updateAlertStateAndLED() {
 
     unsigned long now = millis();
     if (ui.currentAlert == ALERT_NONE) {
-        if (ui.currentMode != MODE_SETTINGS) {
+        if (ui.currentMode != MODE_SETTINGS && ui.currentMode != MODE_SETTINGS_EDIT) {
              setLedState(false);
         }
-        ui.ledState = false; 
+        ui.ledState = false;
     } else {
         unsigned long interval = (ui.currentAlert == ALERT_ALARM) ? 120 : 250; 
         if (now - ui.lastLedToggleMs > interval) {
@@ -1369,7 +1484,8 @@ void loop() {
         case MODE_POMODORO:   runPomodoro(encStep, encPressed, k0Pressed); break;
         case MODE_ALARM:      runAlarm(encStep, encPressed, k0Pressed); break;
         case MODE_DVD:        runDvd(encStep, encPressed, k0Pressed); break;
-        case MODE_SETTINGS:   runSettings(encStep, encPressed, k0Pressed); break;
+        case MODE_SETTINGS:       runSettingsMenu(encStep, encPressed, k0Pressed); break;
+        case MODE_SETTINGS_EDIT:  runSettingsEdit(encStep, encPressed, k0Pressed); break;
         case MODE_WIFI_SETUP: runWiFiSetup(k0Pressed); break;
     }
 }
