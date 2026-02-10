@@ -1,8 +1,8 @@
 #ifndef HARDWARE_H
 #define HARDWARE_H
 
-#include "Globals.h"
 #include "Config.h"
+#include "Globals.h"
 
 void initHardware();
 void setLedState(bool on);

@@ -1,11 +1,11 @@
 #ifndef INPUTMANAGER_H
 #define INPUTMANAGER_H
 
-#include <Arduino.h>
 #include "Config.h"
+#include <Arduino.h>
 
 class InputManager {
-private:
+  private:
     int lastEncA = HIGH;
     int lastEncB = HIGH;
     bool lastEncBtnState = HIGH;
@@ -14,7 +14,7 @@ private:
     unsigned long lastKey0Ms = 0;
     bool key0Consumed = false;
 
-public:
+  public:
     // Public state to be read by Modes
     int encStep = 0;
     bool encPressed = false;

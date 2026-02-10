@@ -2,7 +2,7 @@
 
 StateManager State;
 
-void StateManager::switchMode(Mode* newMode) {
+void StateManager::switchMode(Mode *newMode) {
     if (nextMode != nullptr) {
         delete nextMode;
     }
@@ -18,7 +18,7 @@ void StateManager::update() {
         nextMode = nullptr;
         currentMode->enter();
     }
-    
+
     if (currentMode != nullptr) {
         currentMode->loop();
     }

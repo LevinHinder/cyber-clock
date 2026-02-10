@@ -4,12 +4,12 @@
 #include "Mode.h"
 
 class StateManager {
-private:
-    Mode* currentMode = nullptr;
-    Mode* nextMode = nullptr;
+  private:
+    Mode *currentMode = nullptr;
+    Mode *nextMode = nullptr;
 
-public:
-    void switchMode(Mode* newMode);
+  public:
+    void switchMode(Mode *newMode);
     void update();
 };
 

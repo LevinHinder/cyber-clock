@@ -4,11 +4,11 @@
 #include <Arduino.h>
 
 class Mode {
-public:
+  public:
     virtual ~Mode() {}
     virtual void enter() = 0;
-    virtual void loop() = 0; 
-    // Optional: virtual void exit() {} 
+    virtual void loop() = 0;
+    // Optional: virtual void exit() {}
 };
 
 #endif
