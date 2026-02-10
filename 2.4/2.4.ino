@@ -217,6 +217,7 @@ struct InputState {
     bool lastKey0 = HIGH;
     unsigned long lastEncBtnMs = 0;
     unsigned long lastKey0Ms = 0;
+    bool key0Consumed = false;
 };
 
 // ==========================================
@@ -241,6 +242,29 @@ uint16_t dvdPalette[] = { ST77XX_WHITE, Colors::ACCENT, Colors::LIGHT, Colors::G
 // ==========================================
 //           HARDWARE & SYSTEM HELPERS
 // ==========================================
+
+bool checkBackButton() {
+    bool cur = digitalRead(Pins::KEY0);
+    unsigned long now = millis();
+
+    // Button pressed (LOW)
+    if (cur == LOW) {
+        // First time we see it LOW
+        if (!input.key0Consumed && (now - input.lastKey0Ms) > 80) {
+            input.key0Consumed = true;
+            input.lastKey0Ms = now;
+            return true;
+        }
+    } 
+    // Button released → re-arm
+    else {
+        input.key0Consumed = false;
+        input.lastKey0Ms = now;
+    }
+
+    return false;
+}
+
 
 void setLedState(bool on) {
     if (on) {
@@ -1776,7 +1800,7 @@ void loop() {
     // Input
     int encStep = readEncoderStep();
     bool encPressed = checkButtonPressed(Pins::ENC_BTN, input.lastEncBtn, input.lastEncBtnMs);
-    bool k0Pressed  = checkButtonPressed(Pins::KEY0,    input.lastKey0,   input.lastKey0Ms);
+    bool k0Pressed = checkBackButton();
 
     // System Checks
     checkAlarmTrigger();
