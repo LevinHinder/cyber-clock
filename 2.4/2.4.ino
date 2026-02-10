@@ -18,6 +18,11 @@ namespace Net {
     const char* TIME_ZONE = "CET-1CEST,M3.5.0,M10.5.0/3"; 
 }
 
+namespace PWM {
+    constexpr int CH_LED = 0;
+    constexpr int CH_BUZZ = 1;
+}
+
 namespace Pins {
     constexpr int TFT_CS   = 9;
     constexpr int TFT_DC   = 8;
@@ -206,28 +211,34 @@ uint16_t dvdPalette[] = { ST77XX_WHITE, Colors::ACCENT, Colors::LIGHT, Colors::G
 void setLedState(bool on) {
     if (on) {
         int duty = map(settings.ledBrightness, 0, 100, 0, 255);
-        ledcWrite(Pins::LED, duty);
+        ledcWrite(PWM::CH_LED, duty); // Write to Channel 0
     } else {
-        ledcWrite(Pins::LED, 0);
+        ledcWrite(PWM::CH_LED, 0);
     }
 }
 
 void playSystemTone(unsigned int frequency, unsigned long durationMs = 0) {
     if (settings.speakerVol == 0) {
-        ledcWrite(Pins::BUZZ, 0);
+        ledcWrite(PWM::CH_BUZZ, 0);
         return;
     }
-    ledcAttach(Pins::BUZZ, frequency, 8);
+    
+    // Set up the channel with the new frequency
+    ledcSetup(PWM::CH_BUZZ, frequency, 8);
+    // Ensure pin is attached
+    ledcAttachPin(Pins::BUZZ, PWM::CH_BUZZ);
+    
     int duty = map(settings.speakerVol, 0, 100, 0, 128);
-    ledcWrite(Pins::BUZZ, duty);
+    ledcWrite(PWM::CH_BUZZ, duty);
+    
     if (durationMs > 0) {
         delay(durationMs);
-        ledcWrite(Pins::BUZZ, 0);
+        ledcWrite(PWM::CH_BUZZ, 0);
     }
 }
 
 void stopSystemTone() {
-    ledcWrite(Pins::BUZZ, 0);
+    ledcWrite(PWM::CH_BUZZ, 0);
 }
 
 void loadSettings() {
@@ -1239,8 +1250,11 @@ void setup() {
     pinMode(Pins::ENC_BTN, INPUT_PULLUP);
     pinMode(Pins::KEY0,    INPUT_PULLUP);
     
-    ledcAttach(Pins::LED, 5000, 8);  
-    ledcAttach(Pins::BUZZ, 2000, 8); 
+    ledcSetup(PWM::CH_LED, 5000, 8);
+    ledcAttachPin(Pins::LED, PWM::CH_LED);
+
+    ledcSetup(PWM::CH_BUZZ, 2000, 8);
+    ledcAttachPin(Pins::BUZZ, PWM::CH_BUZZ);
 
     loadSettings();
 
