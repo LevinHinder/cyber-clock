@@ -462,7 +462,7 @@ void drawHistoryGraph() {
         int valV = env.hTVOC[idx];
         int yV = map(constrain(valV, 0, 750), 0, 600, 88, 2);
         int valC = env.hCO2[idx];
-        int yC = map(constrain(valC, 400, 1200), 400, 1200, 88, 2);
+        int yC = map(constrain(valC, 0, 2000), 0, 2000, 88, 2);
         int x = i;
 
         if (i > 0) {
