@@ -90,7 +90,9 @@ enum UIMode {
     MODE_DVD, 
     MODE_SETTINGS,      // The list of settings
     MODE_SETTINGS_EDIT, // The page to change a value
-    MODE_WIFI_SETUP 
+    MODE_WIFI_MENU,
+    MODE_WIFI_SETUP,
+    MODE_WIFI_RESET_CONFIRM
 };
 
 enum AlertLevel { ALERT_NONE = 0, ALERT_CO2, ALERT_ALARM };
@@ -158,9 +160,9 @@ struct UIContext {
 
     // Settings Menu
     int settingsIndex = 0;
-    static const int SETTINGS_ITEMS = 5;
-    const char* settingsLabels[SETTINGS_ITEMS] = { "LED Brightness", "Speaker Volume", "Graph Range", "Setup WiFi", "Reset WiFi" };
-    
+    static const int SETTINGS_ITEMS = 4;
+    const char* settingsLabels[SETTINGS_ITEMS] = { "LED Brightness", "Speaker Volume", "Graph Range", "WiFi" };
+
     // Settings Editor
     int editId = -1; // 0=LED, 1=Spk, 2=Graph
     int prevVal = -1; // To detect changes for redraw
@@ -172,12 +174,19 @@ struct UIContext {
 
     // Settings UI
     int settingsSelectedRow = 0;
-    // UPDATED: Now 4 rows (LED, Spk, Setup WiFi, Reset WiFi)
-    static const int SETTINGS_ROWS = 5; 
+    static const int SETTINGS_ROWS = 4; 
     bool settingsEditMode = false;
     bool settingsInited = false;
     int prevLedBarW = -1;
     int prevSpkBarW = -1;
+
+    // NEW: WiFi Menu State
+    int wifiMenuIndex = 0; 
+    bool wifiMenuRedraw = true;
+
+    // NEW: WiFi Reset Confirmation
+    int wifiResetConfirmIndex = 1; // Default to 1 (NO) for safety
+    bool wifiResetRedraw = true;
     
     // WiFi Setup UI
     bool wifiSetupInited = false;
@@ -624,30 +633,32 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
     
     // Draw only if index changed
     if (ui.menuIndex != lastMenuIndex) {
-        // Pass lastMenuIndex to fix the scrolling highlight bug too
         drawGenericList(ui.menuLabels, ui.MENU_ITEMS, ui.menuIndex, lastMenuIndex, lastMenuIndex == -1);
         lastMenuIndex = ui.menuIndex;
     }
 
     if (encStep != 0) {
-        lastMenuIndex = ui.menuIndex; // Save old index
+        lastMenuIndex = ui.menuIndex; 
         ui.menuIndex += encStep;
         if (ui.menuIndex < 0) ui.menuIndex = ui.MENU_ITEMS - 1;
         if (ui.menuIndex >= ui.MENU_ITEMS) ui.menuIndex = 0;
         
-        // Use optimized draw
         drawGenericList(ui.menuLabels, ui.MENU_ITEMS, ui.menuIndex, lastMenuIndex, false);
     }
     
     if (encPressed) {
-        lastMenuIndex = -1; // Reset so it redraws when we come back
+        lastMenuIndex = -1; 
         if (ui.menuIndex == 0) { // Monitor
              ui.currentMode = MODE_CLOCK;
              initClockStaticUI();
+             
+             // --- FORCE IMMEDIATE UPDATE ---
              ui.prevTimeStr = "";
-             updateEnvSensors(true);
+             updateEnvSensors(true); 
              drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
              drawEnvDynamic();
+             // -----------------------------
+             
         } else if (ui.menuIndex == 1) { // Pomodoro
              ui.currentMode = MODE_POMODORO;
              pomo.state = POMO_SET_WORK;
@@ -673,6 +684,13 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
         lastMenuIndex = -1;
         ui.currentMode = MODE_CLOCK;
         initClockStaticUI();
+        
+        // --- ADDED THIS BLOCK TO FIX THE DELAY ---
+        ui.prevTimeStr = "";
+        updateEnvSensors(true); // Force read immediately
+        drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+        drawEnvDynamic();       // Draw values immediately
+        // ----------------------------------------
     }
 }
 
@@ -714,16 +732,16 @@ void drawPomodoroScreen(bool forceStatic) {
     uint16_t labelColor = Colors::LIGHT;
 
     if (pomo.state == POMO_PAUSED) {
-        labelStr = "PAUSED"; labelColor = ST77XX_YELLOW;
+        labelStr = "Paused"; labelColor = ST77XX_YELLOW;
     } else {
         if (pomo.phase == PHASE_WORK) {
-             labelStr = "GET TO WORK!";
+             labelStr = "Get to Work!";
              labelColor = Colors::LIGHT;
         } else if (pomo.phase == PHASE_SHORT) {
-             labelStr = "SHORT BREAK";
+             labelStr = "Short Break";
              labelColor = Colors::GREEN;
         } else {
-             labelStr = "LONG BREAK";
+             labelStr = "Long Break";
              labelColor = Colors::BLUE;
         }
     }
@@ -1166,12 +1184,11 @@ void runSettingsMenu(int encStep, bool encPressed, bool k0Pressed) {
         if (ui.settingsIndex >= ui.SETTINGS_ITEMS) ui.settingsIndex = 0;
         
         drawGenericList(ui.settingsLabels, ui.SETTINGS_ITEMS, ui.settingsIndex, lastIndex, false);
-        lastIndex = ui.settingsIndex; // Update immediately after draw
+        lastIndex = ui.settingsIndex; 
     }
 
     // 3. Selection
     if (encPressed) {
-        // === FIX HERE: Reset lastIndex so it redraws when we return ===
         lastIndex = -1; 
         
         if (ui.settingsIndex == 0) { // LED
@@ -1193,19 +1210,10 @@ void runSettingsMenu(int encStep, bool encPressed, bool k0Pressed) {
             ui.prevVal = -1;
             tft.fillScreen(Colors::BG);
         }
-        else if (ui.settingsIndex == 3) { // WiFi Setup
-            ui.currentMode = MODE_WIFI_SETUP;
-            ui.wifiSetupInited = false;
-        }
-        else if (ui.settingsIndex == 4) { // Reset WiFi
-            tft.fillScreen(Colors::BG);
-            tft.setTextColor(ST77XX_RED);
-            tft.setTextSize(3);
-            tft.setCursor(20, 100);
-            tft.print("RESETTING...");
-            playSystemTone(1000, 500);
-            wm.resetSettings();
-            ESP.restart();
+        else if (ui.settingsIndex == 3) { // WiFi Connection (Merged)
+            ui.currentMode = MODE_WIFI_MENU; // Go to the new Submenu
+            ui.wifiMenuIndex = 0;
+            ui.wifiMenuRedraw = true;
         }
     }
 
@@ -1214,7 +1222,6 @@ void runSettingsMenu(int encStep, bool encPressed, bool k0Pressed) {
         saveSettings();
         lastIndex = -1; 
         ui.currentMode = MODE_MENU;
-        // No drawing here either, runMenu will handle it
     }
 }
 
@@ -1353,17 +1360,239 @@ void runSettingsEdit(int encStep, bool encPressed, bool k0Pressed) {
     }
 }
 
+void runWiFiMenu(int encStep, bool encPressed, bool k0Pressed) {
+    // We use a static variable to track if the selection actually changed
+    static int lastWifiIndex = -1;
+    bool selectionChanged = false;
+
+    // 1. Navigation
+    if (encStep != 0) {
+        ui.wifiMenuIndex += encStep;
+        if (ui.wifiMenuIndex < 0) ui.wifiMenuIndex = 1;
+        if (ui.wifiMenuIndex > 1) ui.wifiMenuIndex = 0;
+        
+        // CRITICAL FIX: Do NOT set ui.wifiMenuRedraw = true here.
+        // Instead, we mark that the selection changed so we only redraw buttons.
+        selectionChanged = true;
+    }
+
+    // 2. Full Screen Drawing (Only runs ONCE when you first enter the menu)
+    if (ui.wifiMenuRedraw) {
+        ui.wifiMenuRedraw = false;
+        lastWifiIndex = -1; // Force buttons to redraw
+        selectionChanged = true; // Ensure buttons draw this frame
+
+        tft.fillScreen(Colors::BG);
+        drawAlarmIcon();
+
+        // --- Draw Status Section (Static) ---
+        tft.setTextColor(Colors::LIGHT);
+        tft.setTextSize(2);
+        printCenteredText("Current Network", 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
+
+        String statusText = "Not Connected";
+        uint16_t statusColor = ST77XX_RED;
+
+        if (WiFi.status() == WL_CONNECTED) {
+            statusText = WiFi.SSID();
+            statusColor = Colors::GREEN;
+        }
+
+        // Draw the SSID or "None" large
+        tft.setTextColor(statusColor);
+        tft.setTextSize(3);
+        int16_t x1, y1; uint16_t w, h;
+        tft.getTextBounds(statusText, 0, 0, &x1, &y1, &w, &h);
+        tft.setCursor((Screen::WIDTH - w) / 2, 70);
+        tft.print(statusText);
+    }
+
+    // 3. Smart Button Redraw (Runs only when selection changes)
+    if (selectionChanged || lastWifiIndex == -1) {
+        const char* options[] = { "Setup", "Reset" };
+        
+        for (int i = 0; i < 2; i++) {
+            // Optimization: Only redraw the specific buttons involved to save SPI time,
+            // or just redraw both (which is simpler and safe).
+            
+            int y = 140 + (i * 45);
+            bool selected = (i == ui.wifiMenuIndex);
+
+            uint16_t btnColor = (i == 1) ? ST77XX_RED : Colors::ACCENT;
+            
+            // ERASE OLD STATE & DRAW NEW STATE
+            if (selected) {
+                // Draw filled box for selected item
+                tft.fillRoundRect(40, y, 240, 35, 6, btnColor);
+                tft.setTextColor(Colors::BG);
+            } else {
+                // Erase the previous filled box by drawing a black box
+                tft.fillRoundRect(40, y, 240, 35, 6, Colors::BG);
+                // Draw the outline
+                tft.drawRoundRect(40, y, 240, 35, 6, Colors::DARK);
+                tft.setTextColor(ST77XX_WHITE);
+            }
+
+            // Draw Text
+            int16_t x1, y1; uint16_t w, h;
+            tft.setTextSize(2);
+            tft.getTextBounds(options[i], 0, 0, &x1, &y1, &w, &h);
+            tft.setCursor((Screen::WIDTH - w) / 2, y + 10);
+            tft.print(options[i]);
+        }
+        
+        lastWifiIndex = ui.wifiMenuIndex;
+    }
+
+    // 4. Actions (Unchanged)
+    if (encPressed) {
+        if (ui.wifiMenuIndex == 0) {
+            // Option 0: Go to Setup
+            ui.currentMode = MODE_WIFI_SETUP;
+            ui.wifiSetupInited = false;
+        } else {
+            // Option 1: Reset -> GO TO CONFIRM PAGE
+            ui.currentMode = MODE_WIFI_RESET_CONFIRM;
+            ui.wifiResetConfirmIndex = 1; // Default to NO (Safety)
+            ui.wifiResetRedraw = true;
+        }
+    }
+
+    if (k0Pressed) {
+        ui.currentMode = MODE_SETTINGS;
+        ui.settingsIndex = 3; 
+    }
+}
+
+void runWiFiResetConfirm(int encStep, bool encPressed, bool k0Pressed) {
+    static int lastConfirmIndex = -1;
+    bool selectionChanged = false;
+
+    // 1. Navigation
+    if (encStep != 0) {
+        ui.wifiResetConfirmIndex += encStep;
+        if (ui.wifiResetConfirmIndex < 0) ui.wifiResetConfirmIndex = 1;
+        if (ui.wifiResetConfirmIndex > 1) ui.wifiResetConfirmIndex = 0;
+        selectionChanged = true;
+    }
+
+    // 2. Full Draw (Runs once)
+    if (ui.wifiResetRedraw) {
+        ui.wifiResetRedraw = false;
+        lastConfirmIndex = -1;
+        selectionChanged = true;
+
+        tft.fillScreen(Colors::BG);
+        drawAlarmIcon();
+
+        // Warning Text
+        tft.setTextColor(ST77XX_RED);
+        tft.setTextSize(3);
+        printCenteredText("WARNING!", 0, Screen::WIDTH, 50, ST77XX_RED, Colors::BG, 3);
+        
+        tft.setTextColor(ST77XX_WHITE);
+        tft.setTextSize(2);
+        printCenteredText("Reset WiFi Settings?", 0, Screen::WIDTH, 90, ST77XX_WHITE, Colors::BG, 2);
+    }
+
+    // 3. Button Draw (Runs on change)
+    if (selectionChanged || lastConfirmIndex == -1) {
+        // We will draw two buttons side-by-side
+        // Index 0 = YES (Left), Index 1 = NO (Right)
+        
+        const char* labels[] = { "YES", "NO" };
+        int btnW = 100;
+        int btnH = 40;
+        int gap = 20;
+        int startX = (Screen::WIDTH - (btnW * 2 + gap)) / 2;
+        int y = 140;
+
+        for (int i = 0; i < 2; i++) {
+            int x = startX + i * (btnW + gap);
+            bool selected = (i == ui.wifiResetConfirmIndex);
+            
+            // YES is RED, NO is GREEN
+            uint16_t color = (i == 0) ? ST77XX_RED : Colors::GREEN; 
+
+            if (selected) {
+                tft.fillRoundRect(x, y, btnW, btnH, 6, color);
+                tft.setTextColor(Colors::BG);
+            } else {
+                tft.fillRoundRect(x, y, btnW, btnH, 6, Colors::BG); // Erase fill
+                tft.drawRoundRect(x, y, btnW, btnH, 6, color);      // Draw outline
+                tft.setTextColor(color);
+            }
+
+            int16_t bx, by; uint16_t bw, bh;
+            tft.setTextSize(2);
+            tft.getTextBounds(labels[i], 0, 0, &bx, &by, &bw, &bh);
+            tft.setCursor(x + (btnW - bw) / 2, y + (btnH - bh) / 2);
+            tft.print(labels[i]);
+        }
+        lastConfirmIndex = ui.wifiResetConfirmIndex;
+    }
+
+    // 4. Actions
+    if (encPressed) {
+        if (ui.wifiResetConfirmIndex == 0) {
+            // --- YES: RESET ---
+            tft.fillScreen(Colors::BG);
+            tft.setTextColor(ST77XX_RED);
+            tft.setTextSize(3);
+            tft.setCursor(20, 100);
+            tft.print("Resetting...");
+            playSystemTone(1000, 1000);
+            
+            wm.resetSettings();
+            delay(500);
+            ESP.restart();
+        } else {
+            // --- NO: GO BACK ---
+            ui.currentMode = MODE_WIFI_MENU;
+            ui.wifiMenuRedraw = true; // Redraw the previous menu
+        }
+    }
+
+    // Back button acts like NO
+    if (k0Pressed) {
+        ui.currentMode = MODE_WIFI_MENU;
+        ui.wifiMenuRedraw = true;
+    }
+}
+
 // --- WIFI SETUP MODE ---
 
 void runWiFiSetup(bool k0Pressed) {
     if (!ui.wifiSetupInited) {
         tft.fillScreen(Colors::BG);
+        drawAlarmIcon();
         
+        // --- Title ---
+        tft.setTextColor(Colors::ACCENT);
+        tft.setTextSize(3);
+        printCenteredText("WiFi Setup", 0, Screen::WIDTH, 30, ST77XX_WHITE, Colors::BG, 3);
+        
+        // --- Step 1 ---
         tft.setTextColor(ST77XX_WHITE);
-        tft.setCursor(20, 100); tft.print("AP: CyberClockSetup");
-        tft.setCursor(20, 120); tft.print("IP: 192.168.4.1");
+        tft.setTextSize(2);
+        tft.setCursor(20, 70);
+        tft.print("1. Connect to:");
         
-        // Non-blocking mode
+        tft.setTextColor(Colors::GREEN); // Highlight AP Name
+        tft.setTextSize(2);
+        tft.setCursor(56, 95); 
+        tft.print("CyberClockSetup");
+
+        // --- Step 2 ---
+        tft.setTextColor(ST77XX_WHITE);
+        tft.setCursor(20, 130);
+        tft.print("2. Go to IP:");
+        
+        tft.setTextColor(Colors::GREEN); // Highlight IP
+        tft.setCursor(56, 155);
+        tft.print("192.168.4.1");
+        
+        // Non-blocking mode setup
         wm.setConfigPortalBlocking(false);
         wm.startConfigPortal("CyberClockSetup");
         
@@ -1376,23 +1605,31 @@ void runWiFiSetup(bool k0Pressed) {
     // Check for Cancel
     if (k0Pressed) {
         wm.stopConfigPortal();
-        ui.currentMode = MODE_SETTINGS;
-        ui.settingsInited = false; // Force redraw of settings
+        ui.currentMode = MODE_WIFI_MENU; // Go back to WiFi Menu
+        ui.wifiMenuRedraw = true;        // Force redraw of WiFi Menu
         return;
     }
 
     // Check for Success
     if (WiFi.status() == WL_CONNECTED) {
         tft.fillScreen(Colors::BG);
-        tft.setTextColor(Colors::GREEN); tft.setTextSize(2);
-        tft.setCursor(20, 100); tft.print("Connected!");
-        delay(100);
+        
+        tft.setTextColor(Colors::GREEN);
+        tft.setTextSize(3);
+        printCenteredText("Success!", 0, Screen::WIDTH, 100, Colors::GREEN, Colors::BG, 3);
+        
+        tft.setTextSize(2);
+        tft.setTextColor(ST77XX_WHITE);
+        printCenteredText("WiFi Connected", 0, Screen::WIDTH, 140, ST77XX_WHITE, Colors::BG, 2);
+        
+        delay(1500); // Show success message for 1.5 seconds
         
         syncTime();
         
         wm.stopConfigPortal();
         ui.currentMode = MODE_SETTINGS;
-        ui.settingsInited = false;
+        ui.settingsIndex = 3; // Highlight "WiFi Connection" in settings
+        ui.settingsInited = false; // Force redraw of settings list
     }
 }
 
@@ -1547,13 +1784,15 @@ void loop() {
 
     // Mode Dispatch
     switch (ui.currentMode) {
-        case MODE_MENU:       runMenu(encStep, encPressed, k0Pressed); break;
-        case MODE_CLOCK:      runClock(k0Pressed); break;
-        case MODE_POMODORO:   runPomodoro(encStep, encPressed, k0Pressed); break;
-        case MODE_ALARM:      runAlarm(encStep, encPressed, k0Pressed); break;
-        case MODE_DVD:        runDvd(encStep, encPressed, k0Pressed); break;
-        case MODE_SETTINGS:       runSettingsMenu(encStep, encPressed, k0Pressed); break;
-        case MODE_SETTINGS_EDIT:  runSettingsEdit(encStep, encPressed, k0Pressed); break;
-        case MODE_WIFI_SETUP: runWiFiSetup(k0Pressed); break;
+        case MODE_MENU:                 runMenu(encStep, encPressed, k0Pressed); break;
+        case MODE_CLOCK:                runClock(k0Pressed); break;
+        case MODE_POMODORO:             runPomodoro(encStep, encPressed, k0Pressed); break;
+        case MODE_ALARM:                runAlarm(encStep, encPressed, k0Pressed); break;
+        case MODE_DVD:                  runDvd(encStep, encPressed, k0Pressed); break;
+        case MODE_SETTINGS:             runSettingsMenu(encStep, encPressed, k0Pressed); break;
+        case MODE_SETTINGS_EDIT:        runSettingsEdit(encStep, encPressed, k0Pressed); break;
+        case MODE_WIFI_MENU:            runWiFiMenu(encStep, encPressed, k0Pressed); break;
+        case MODE_WIFI_SETUP:           runWiFiSetup(k0Pressed); break;
+        case MODE_WIFI_RESET_CONFIRM:   runWiFiResetConfirm(encStep, encPressed, k0Pressed); break;
     }
 }
