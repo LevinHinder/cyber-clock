@@ -88,12 +88,17 @@ enum AlertLevel { ALERT_NONE = 0, ALERT_CO2, ALERT_ALARM };
 enum PomodoroState { POMO_SET_WORK = 0, POMO_SET_SHORT, POMO_SET_LONG, POMO_SET_CYCLES, POMO_READY, POMO_RUNNING, POMO_PAUSED, POMO_DONE };
 enum PomoPhase { PHASE_WORK, PHASE_SHORT, PHASE_LONG };
 
+const int GRAPH_RANGES_MIN[] = { 5, 15, 30, 60, 180, 360, 720, 1440 };
+const int GRAPH_RANGES_COUNT = 8;
+
 struct AppSettings {
     int ledBrightness = 100; 
     int speakerVol = 100;
+
+    int graphDuration = 360;
     
     // Alarm
-    uint8_t alarmHour = 7;
+    uint8_t alarmHour = 6;
     uint8_t alarmMinute = 0;
     bool alarmEnabled = false;
 
@@ -149,7 +154,7 @@ struct UIContext {
     // Settings UI
     int settingsSelectedRow = 0;
     // UPDATED: Now 4 rows (LED, Spk, Setup WiFi, Reset WiFi)
-    static const int SETTINGS_ROWS = 4; 
+    static const int SETTINGS_ROWS = 5; 
     bool settingsEditMode = false;
     bool settingsInited = false;
     int prevLedBarW = -1;
@@ -246,6 +251,8 @@ void loadSettings() {
     prefs.begin("cyber", true); 
     settings.ledBrightness = prefs.getInt("led_b", 100);
     settings.speakerVol    = prefs.getInt("spk_v", 100);
+
+    settings.graphDuration = prefs.getInt("gr_dur", 5);
     
     settings.alarmHour     = prefs.getInt("alm_h", 7);
     settings.alarmMinute   = prefs.getInt("alm_m", 0);
@@ -262,6 +269,8 @@ void saveSettings() {
     prefs.begin("cyber", false); 
     prefs.putInt("led_b", settings.ledBrightness);
     prefs.putInt("spk_v", settings.speakerVol);
+
+    prefs.putInt("gr_dur", settings.graphDuration);
     
     prefs.putInt("alm_h", settings.alarmHour);
     prefs.putInt("alm_m", settings.alarmMinute);
@@ -433,10 +442,19 @@ void updateEnvSensors(bool force = false) {
         if (newTVOC != 0xFFFF) env.tvoc = newTVOC;
         if (newCO2  != 0xFFFF) env.eco2 = newCO2;
     }
-    if (now - env.lastHistAdd >= 1000) { // 1 sec interval
+
+    // === NEW LOGIC START ===
+    // Calculate interval: (DurationMinutes * 60000ms) / 320 pixels
+    unsigned long interval = (settings.graphDuration * 60000UL) / EnvData::HIST_LEN;
+    
+    // Safety clamp: minimum 1 second interval
+    if (interval < 1000) interval = 1000;
+
+    if (now - env.lastHistAdd >= interval) { 
         env.lastHistAdd = now;
         recordHistory(env.temp, env.hum, env.tvoc, env.eco2);
     }
+    // === NEW LOGIC END ===
 }
 
 // ==========================================
@@ -1000,37 +1018,53 @@ void drawSettingsScreen(bool full) {
     
     uint16_t ledTextColor = ST77XX_WHITE;
     uint16_t spkTextColor = ST77XX_WHITE;
+    uint16_t graphTextColor = ST77XX_WHITE; // New color var
     uint16_t wifiTextColor = ST77XX_WHITE;
     uint16_t resetTextColor = ST77XX_WHITE;
 
-    if (ui.settingsSelectedRow == 0) {
-        ledTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
-    } else if (ui.settingsSelectedRow == 1) {
-        spkTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
-    } else if (ui.settingsSelectedRow == 2) {
-        wifiTextColor = Colors::BLUE; 
-    } else if (ui.settingsSelectedRow == 3) {
-        resetTextColor = ST77XX_RED; // RED for destructive action
-    }
+    // Highlight logic
+    if (ui.settingsSelectedRow == 0) ledTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
+    else if (ui.settingsSelectedRow == 1) spkTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE;
+    else if (ui.settingsSelectedRow == 2) graphTextColor = ui.settingsEditMode ? Colors::GREEN : Colors::BLUE; // New Row
+    else if (ui.settingsSelectedRow == 3) wifiTextColor = Colors::BLUE; 
+    else if (ui.settingsSelectedRow == 4) resetTextColor = ST77XX_RED; 
     
-    // --- Draw LED Section (y=40) ---
+    // --- Row 0: LED (y=40) ---
     int yLed = 40;
     tft.setTextSize(2);
     tft.setTextColor(ledTextColor, Colors::BG);
-    tft.setCursor(barX, yLed - 20);
-    tft.print("LED Brightness");
+    tft.setCursor(barX, yLed - 20); tft.print("LED Brightness");
     drawBarItem(barX, yLed, barW, barH, settings.ledBrightness, ui.prevLedBarW);
 
-    // --- Draw Speaker Section (y=90) ---
-    int ySpk = 90;
+    // --- Row 1: Speaker (y=80) ---
+    int ySpk = 80; // Moved up slightly to fit 5 items
     tft.setTextColor(spkTextColor, Colors::BG);
-    tft.setCursor(barX, ySpk - 20);
-    tft.print("Speaker Volume");
+    tft.setCursor(barX, ySpk - 20); tft.print("Speaker Volume");
     drawBarItem(barX, ySpk, barW, barH, settings.speakerVol, ui.prevSpkBarW);
 
-    // --- Draw WiFi Setup Section (y=140) ---
-    int yWifi = 140;
-    if (ui.settingsSelectedRow == 2) {
+    // --- Row 2: Graph Duration (y=120) ---
+    int yGraph = 120;
+    tft.setTextColor(graphTextColor, Colors::BG);
+    tft.setCursor(barX, yGraph - 20); tft.print("Graph Range");
+    
+    // Draw Text Box for Time
+    tft.drawRect(barX - 1, yGraph - 1, barW + 2, barH + 12, ST77XX_WHITE); // Taller box for text
+    tft.fillRect(barX, yGraph, barW, barH + 10, Colors::DARK);
+    
+    String rangeStr;
+    if (settings.graphDuration < 60) rangeStr = String(settings.graphDuration) + " Min";
+    else rangeStr = String(settings.graphDuration / 60) + " Hours";
+    
+    // Center the text inside the box
+    int16_t bx, by; uint16_t bw, bh;
+    tft.getTextBounds(rangeStr, 0, 0, &bx, &by, &bw, &bh);
+    tft.setCursor(barX + (barW - bw)/2, yGraph + 4);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(rangeStr);
+
+    // --- Row 3: WiFi Setup (y=165) ---
+    int yWifi = 165;
+    if (ui.settingsSelectedRow == 3) {
         tft.fillRoundRect(barX, yWifi, barW, 25, 4, Colors::BLUE);
         tft.setTextColor(Colors::BG);
     } else {
@@ -1038,14 +1072,13 @@ void drawSettingsScreen(bool full) {
         tft.setTextColor(ST77XX_WHITE);
     }
     String wifiText = "Setup WiFi";
-    int16_t bx, by; uint16_t w, h;
-    tft.getTextBounds(wifiText, 0, 0, &bx, &by, &w, &h);
-    tft.setCursor(barX + (barW-w)/2, yWifi + (25-h)/2);
+    tft.getTextBounds(wifiText, 0, 0, &bx, &by, &bw, &bh);
+    tft.setCursor(barX + (barW-bw)/2, yWifi + (25-bh)/2);
     tft.print(wifiText);
 
-    // --- Draw Reset WiFi Section (y=190) ---
-    int yReset = 190;
-    if (ui.settingsSelectedRow == 3) {
+    // --- Row 4: Reset WiFi (y=200) ---
+    int yReset = 200;
+    if (ui.settingsSelectedRow == 4) {
         tft.fillRoundRect(barX, yReset, barW, 25, 4, ST77XX_RED);
         tft.setTextColor(Colors::BG);
     } else {
@@ -1053,8 +1086,8 @@ void drawSettingsScreen(bool full) {
         tft.setTextColor(ST77XX_WHITE);
     }
     String resetText = "Reset WiFi";
-    tft.getTextBounds(resetText, 0, 0, &bx, &by, &w, &h);
-    tft.setCursor(barX + (barW-w)/2, yReset + (25-h)/2);
+    tft.getTextBounds(resetText, 0, 0, &bx, &by, &bw, &bh);
+    tft.setCursor(barX + (barW-bw)/2, yReset + (25-bh)/2);
     tft.print(resetText);
 }
 
@@ -1075,13 +1108,11 @@ void runSettings(int encStep, bool encPressed, bool k0Pressed) {
     }
 
     if (encPressed) {
-        if (ui.settingsSelectedRow == 2) {
-            // ENTER WIFI SETUP MODE
+        if (ui.settingsSelectedRow == 3) { // WiFi Setup (Index shifted due to new row)
             ui.currentMode = MODE_WIFI_SETUP;
             ui.wifiSetupInited = false;
         }
-        else if (ui.settingsSelectedRow == 3) {
-            // == RESET WIFI & REBOOT ==
+        else if (ui.settingsSelectedRow == 4) { // Reset (Index shifted)
             tft.fillScreen(Colors::BG);
             tft.setTextColor(ST77XX_RED);
             tft.setTextSize(3);
@@ -1093,8 +1124,7 @@ void runSettings(int encStep, bool encPressed, bool k0Pressed) {
         }
         else {
             ui.settingsEditMode = !ui.settingsEditMode;
-            if (ui.settingsEditMode && ui.settingsSelectedRow == 0) setLedState(true);
-            else setLedState(false);
+            // Visual feedback for edit mode
             drawSettingsScreen(false); 
         }
     }
@@ -1107,6 +1137,28 @@ void runSettings(int encStep, bool encPressed, bool k0Pressed) {
             } else if (ui.settingsSelectedRow == 1) {
                 settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
                 playSystemTone(2000, 20); 
+            } else if (ui.settingsSelectedRow == 2) {
+                // === GRAPH DURATION LOGIC ===
+                // Find current index
+                int curIdx = 0;
+                for(int i=0; i<GRAPH_RANGES_COUNT; i++) {
+                    if (settings.graphDuration == GRAPH_RANGES_MIN[i]) { curIdx = i; break; }
+                }
+                
+                // Change index
+                curIdx += encStep;
+                if (curIdx < 0) curIdx = 0;
+                if (curIdx >= GRAPH_RANGES_COUNT) curIdx = GRAPH_RANGES_COUNT - 1;
+                
+                // Set new minutes
+                int newDur = GRAPH_RANGES_MIN[curIdx];
+                
+                // If duration changed, clear history to avoid ugly graph scaling
+                if (newDur != settings.graphDuration) {
+                     settings.graphDuration = newDur;
+                     // Optional: clear history so graph restarts fresh
+                     // for(int i=0; i<EnvData::HIST_LEN; i++) { env.hTemp[i]=0; env.hHum[i]=0; }
+                }
             }
         } else {
             setLedState(false); 
