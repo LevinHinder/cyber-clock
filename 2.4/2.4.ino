@@ -182,7 +182,8 @@ struct InputState {
     int lastEncB = HIGH;
     bool lastEncBtn = HIGH;
     bool lastKey0 = HIGH;
-    unsigned long lastBtnMs = 0;
+    unsigned long lastEncBtnMs = 0;
+    unsigned long lastKey0Ms = 0;
 };
 
 // ==========================================
@@ -233,7 +234,7 @@ void playSystemTone(unsigned int frequency, unsigned long durationMs = 0) {
     
     if (durationMs > 0) {
         delay(durationMs);
-        ledcWrite(PWM::CH_BUZZ, 0);
+        stopSystemTone();
     }
 }
 
@@ -273,6 +274,10 @@ void saveSettings() {
     prefs.end();
 }
 
+// --- POMODORO HELPERS ---
+void updatePomodoroValue(int value);
+void drawPomodoroScreen(bool forceStatic);
+
 int readEncoderStep() {
     int encA = digitalRead(Pins::ENC_A);
     int encB = digitalRead(Pins::ENC_B);
@@ -288,14 +293,20 @@ int readEncoderStep() {
     return step;
 }
 
-bool checkButtonPressed(uint8_t pin, bool &lastState) {
+// Update the signature to accept 'lastMs' by reference
+bool checkButtonPressed(uint8_t pin, bool &lastState, unsigned long &lastMs) {
     bool cur = digitalRead(pin);
     bool pressed = false;
     unsigned long now = millis();
-    if (cur == LOW && lastState == HIGH && (now - input.lastBtnMs) > 150) {
-        pressed = true;
-        input.lastBtnMs = now;
+    
+    // Use the specific 'lastMs' timer passed in, not a global one
+    if (cur == LOW && lastState == HIGH) {
+        if (now - lastMs > 150) { // Debounce check
+            pressed = true;
+            lastMs = now; // Update the specific timer
+        }
     }
+    
     lastState = cur;
     return pressed;
 }
@@ -579,7 +590,8 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
              tft.fillScreen(Colors::BG);
              tft.setTextSize(2); tft.setTextColor(Colors::LIGHT, Colors::BG);
              printCenteredText("Set Work", 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
-        } else if (ui.menuIndex == 2) { // Alarm
+             updatePomodoroValue(settings.pomoWorkMin);
+            } else if (ui.menuIndex == 2) { // Alarm
              ui.currentMode = MODE_ALARM;
              ui.alarmSelectedField = 0;
              tft.fillScreen(Colors::BG);
@@ -604,10 +616,6 @@ void runMenu(int encStep, bool encPressed, bool k0Pressed) {
         drawEnvDynamic();
     }
 }
-
-// --- POMODORO HELPERS ---
-void updatePomodoroValue(int value);
-void drawPomodoroScreen(bool forceStatic);
 
 // --- POMODORO SCREEN ---
 
@@ -647,14 +655,17 @@ void drawPomodoroScreen(bool forceStatic) {
     uint16_t labelColor = Colors::LIGHT;
 
     if (pomo.state == POMO_PAUSED) {
-        labelStr = "[ PAUSED ]"; labelColor = ST77XX_YELLOW;
+        labelStr = "PAUSED"; labelColor = ST77XX_YELLOW;
     } else {
         if (pomo.phase == PHASE_WORK) {
-             labelStr = "GET TO WORK!"; labelColor = Colors::ACCENT;
+             labelStr = "GET TO WORK!";
+             labelColor = Colors::LIGHT;
         } else if (pomo.phase == PHASE_SHORT) {
-             labelStr = "SHORT BREAK"; labelColor = Colors::GREEN;
+             labelStr = "SHORT BREAK";
+             labelColor = Colors::GREEN;
         } else {
-             labelStr = "LONG BREAK"; labelColor = Colors::BLUE;
+             labelStr = "LONG BREAK";
+             labelColor = Colors::BLUE;
         }
     }
 
@@ -757,30 +768,39 @@ void runPomodoro(int encStep, bool encPressed, bool k0Pressed) {
         }
         if (pomo.state == POMO_RUNNING) {
             unsigned long elapsed = millis() - pomo.startMillis;
+            
+            // Time is up!
             if (elapsed >= pomo.durationMs) {
+                // 1. Play Alarm
                 setLedState(true);
-                playSystemTone(2000, 0); 
-                delay(3000);
-                stopSystemTone();
+                playSystemTone(2000, 1500);
                 setLedState(false);
 
+                // 2. Decide Next Phase
                 if (pomo.phase == PHASE_WORK) {
+                    // LOGIC FIX: Use strictly LESS THAN (<) 
+                    // If Cycle 1 < 4 -> Short Break
+                    // If Cycle 4 < 4 -> False -> Long Break (Correct)
                     if (pomo.currentCycle < settings.pomoCycles) {
                         pomo.phase = PHASE_SHORT;
                         pomo.durationMs = settings.pomoShortMin * 60UL * 1000UL;
                     } else {
+                        // This is the last cycle, so do the Long Break immediately
                         pomo.phase = PHASE_LONG;
                         pomo.durationMs = settings.pomoLongMin * 60UL * 1000UL;
                     }
                 } else if (pomo.phase == PHASE_SHORT) {
+                    // End of Short Break -> Start Next Work Cycle
                     pomo.phase = PHASE_WORK;
                     pomo.currentCycle++;
                     pomo.durationMs = settings.pomoWorkMin * 60UL * 1000UL;
                 } else if (pomo.phase == PHASE_LONG) {
-                    pomo.state = POMO_DONE;
-                    drawPomodoroScreen(true);
+                    pomo.phase = PHASE_WORK;       // Go back to Work
+                    pomo.currentCycle = 1;         // Reset cycle counter to 1
+                    pomo.durationMs = settings.pomoWorkMin * 60UL * 1000UL; // Set duration to Work time
                 }
                 
+                // 3. Restart Timer for next phase (if not done)
                 if (pomo.state != POMO_DONE) {
                     pomo.startMillis = millis();
                     drawPomodoroScreen(true);
@@ -1068,9 +1088,8 @@ void runSettings(int encStep, bool encPressed, bool k0Pressed) {
             tft.setCursor(20, 100);
             tft.print("RESETTING...");
             playSystemTone(1000, 500);
-            delay(1000);
-            wm.resetSettings(); // Clear Creds
-            ESP.restart();      // Reboot to fresh state
+            wm.resetSettings();
+            ESP.restart();
         }
         else {
             ui.settingsEditMode = !ui.settingsEditMode;
@@ -1204,18 +1223,19 @@ void checkStartupWiFi() {
     if (connected) {
         tft.setTextColor(Colors::GREEN);
         tft.setCursor(20, 130); tft.print("Connected!");
-        delay(500);
+        delay(100);
         syncTime();
         
         struct tm timeinfo;
         int retries = 0;
         while (!getLocalTime(&timeinfo) && retries < 5) {
-            delay(500); retries++;
+            delay(500);
+            retries++;
         }
     } else {
         tft.setTextColor(ST77XX_RED);
         tft.setCursor(20, 130); tft.print("Offline Mode");
-        delay(1000);
+        delay(100);
         
         // Manual Time Init
         struct tm tm;
@@ -1237,7 +1257,7 @@ void checkStartupWiFi() {
 
 void setup() {
     Serial.begin(115200);
-    delay(1500);
+    delay(1000);
 
     // Initialize History
     for(int i=0; i<EnvData::HIST_LEN; i++) {
@@ -1283,8 +1303,8 @@ void setup() {
 void loop() {
     // Input
     int encStep = readEncoderStep();
-    bool encPressed = checkButtonPressed(Pins::ENC_BTN, input.lastEncBtn);
-    bool k0Pressed = checkButtonPressed(Pins::KEY0, input.lastKey0);
+    bool encPressed = checkButtonPressed(Pins::ENC_BTN, input.lastEncBtn, input.lastEncBtnMs);
+    bool k0Pressed  = checkButtonPressed(Pins::KEY0,    input.lastKey0,   input.lastKey0Ms);
 
     // System Checks
     checkAlarmTrigger();
