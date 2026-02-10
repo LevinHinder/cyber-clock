@@ -105,7 +105,7 @@ struct AppSettings {
     int ledBrightness = 100; 
     int speakerVol = 100;
 
-    int graphDuration = 360;
+    int graphDuration = 180;
     
     // Alarm
     uint8_t alarmHour = 6;
@@ -897,37 +897,57 @@ void drawAlarmRingingScreen() {
 }
 
 void drawAlarmScreen(bool full) {
+    // 1. Static Elements (Draw only once)
     if (full) {
         tft.fillScreen(Colors::BG);
         drawAlarmIcon();
+        
+        tft.setTextSize(3);
+        tft.setTextColor(ST77XX_WHITE, Colors::BG);
+        tft.setCursor(50, 165);
+        tft.print("Status:");
     }
+
+    // 2. Dynamic Elements (Time)
     char hBuf[3], mBuf[3];
     sprintf(hBuf, "%02d", settings.alarmHour);
     sprintf(mBuf, "%02d", settings.alarmMinute);
 
     tft.setTextSize(6);
-    String disp = String(hBuf) + ":" + String(mBuf);
+    
+    // Calculate centering (do this math, but don't clear screen based on it)
     int16_t x1, y1; uint16_t w, h;
-    tft.getTextBounds(disp, 0, 0, &x1, &y1, &w, &h);
+    tft.getTextBounds("88:88", 0, 0, &x1, &y1, &w, &h);
     int x = (Screen::WIDTH - w) / 2;
     int y = 60;
 
     tft.setCursor(x, y);
+
+    // Draw Hour (overwrite background to prevent flicker)
     tft.setTextColor(ui.alarmSelectedField == 0 ? Colors::LIGHT : ST77XX_WHITE, Colors::BG);
     tft.print(hBuf);
+
+    // Draw Colon
     tft.setTextColor(ST77XX_WHITE, Colors::BG);
     tft.print(":");
+
+    // Draw Minute
     tft.setTextColor(ui.alarmSelectedField == 1 ? Colors::LIGHT : ST77XX_WHITE, Colors::BG);
     tft.print(mBuf);
 
+    // 3. Dynamic Elements (Status ON/OFF)
+    // REMOVED: tft.fillRect(...) <--- This was causing the flicker!
+    
     tft.setTextSize(3);
-    tft.setTextColor(ST77XX_WHITE, Colors::BG);
-    tft.fillRect(40, 160, 240, 40, Colors::BG);
-    tft.setCursor(50, 165);
-    tft.print("Status:");
     tft.setCursor(180, 165);
+    
     uint16_t enColor = ui.alarmSelectedField == 2 ? Colors::LIGHT : (settings.alarmEnabled ? Colors::GREEN : ST77XX_RED);
+    
+    // Passing Colors::BG as the second argument clears the previous text automatically
     tft.setTextColor(enColor, Colors::BG);
+    
+    // We add a space to "ON " so it has same length as "OFF" (3 chars)
+    // This ensures "OFF" is completely overwritten when switching to "ON"
     tft.print(settings.alarmEnabled ? "ON " : "OFF");
 }
 
@@ -1201,87 +1221,135 @@ void runSettingsMenu(int encStep, bool encPressed, bool k0Pressed) {
 void runSettingsEdit(int encStep, bool encPressed, bool k0Pressed) {
     // 1. Handle Value Changes
     bool valChanged = false;
-    
+    int currentVal = 0; 
+
     if (ui.editId == 0) { // LED
         if (encStep != 0) {
-            settings.ledBrightness = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
-            setLedState(true); // Preview
-            valChanged = true;
+            int newVal = constrain(settings.ledBrightness + (encStep * 5), 0, 100);
+            if (newVal != settings.ledBrightness) {
+                settings.ledBrightness = newVal;
+                setLedState(true); 
+                valChanged = true;
+            }
         }
+        currentVal = settings.ledBrightness;
     } 
     else if (ui.editId == 1) { // Speaker
         if (encStep != 0) {
-            settings.speakerVol = constrain(settings.speakerVol + (encStep * 5), 0, 100);
-            playSystemTone(2000, 20); // Preview beep
-            valChanged = true;
+            int newVal = constrain(settings.speakerVol + (encStep * 5), 0, 100);
+            if (newVal != settings.speakerVol) {
+                settings.speakerVol = newVal;
+                playSystemTone(2000, 20); 
+                valChanged = true;
+            }
         }
+        currentVal = settings.speakerVol;
     }
     else if (ui.editId == 2) { // Graph Range
         if (encStep != 0) {
-            int curIdx = 0;
+            // Find current index
+            int oldIdx = 0;
             for(int i=0; i<GRAPH_RANGES_COUNT; i++) {
-                if (settings.graphDuration == GRAPH_RANGES_MIN[i]) { curIdx = i; break; }
+                if (settings.graphDuration == GRAPH_RANGES_MIN[i]) { oldIdx = i; break; }
             }
-            curIdx = constrain(curIdx + encStep, 0, GRAPH_RANGES_COUNT - 1);
-            settings.graphDuration = GRAPH_RANGES_MIN[curIdx];
-            valChanged = true;
+            
+            // Calculate NEW index
+            int newIdx = constrain(oldIdx + encStep, 0, GRAPH_RANGES_COUNT - 1);
+            
+            // Only update if it ACTUALLY changed
+            if (newIdx != oldIdx) {
+                settings.graphDuration = GRAPH_RANGES_MIN[newIdx];
+                valChanged = true;
+            }
         }
+        currentVal = settings.graphDuration;
     }
 
-    // 2. Draw Screen (Only if changed or first run)
-    if (valChanged || ui.prevVal == -1) {
-        ui.prevVal = 0; // Mark as drawn
+    // 2. Initial Setup (Run ONLY once when entering the page)
+    if (ui.prevVal == -1) {
+        tft.fillScreen(Colors::BG);
         
         // Draw Header
-        tft.setTextSize(2);
-        tft.setTextColor(Colors::ACCENT, Colors::BG);
-        String title = "";
-        if (ui.editId == 0) title = "LED Brightness";
-        else if (ui.editId == 1) title = "Speaker Volume";
-        else if (ui.editId == 2) title = "Graph Range";
-        
-        int16_t bx, by; uint16_t bw, bh;
-        tft.getTextBounds(title, 0, 0, &bx, &by, &bw, &bh);
-        tft.setCursor((Screen::WIDTH - bw)/2, 30);
-        tft.print(title);
+        String title = (ui.editId==0) ? "LED Brightness" : (ui.editId==1) ? "Speaker Volume" : "Graph Range";
+        printCenteredText(title, 0, Screen::WIDTH, 40, Colors::LIGHT, Colors::BG, 2);
 
-        // Draw Value
-        tft.setTextSize(5);
-        tft.setTextColor(ST77XX_WHITE, Colors::BG);
-        String valStr = "";
-        
-        if (ui.editId == 0) valStr = String(settings.ledBrightness) + "%";
-        else if (ui.editId == 1) valStr = String(settings.speakerVol) + "%";
-        else if (ui.editId == 2) {
-            if (settings.graphDuration < 60) valStr = String(settings.graphDuration) + "m";
-            else valStr = String(settings.graphDuration/60) + "h";
-        }
-
-        tft.fillRect(0, 80, Screen::WIDTH, 60, Colors::BG);
-        tft.getTextBounds(valStr, 0, 0, &bx, &by, &bw, &bh);
-        tft.setCursor((Screen::WIDTH - bw)/2, 90);
-        tft.print(valStr);
-
-        // Draw Progress Bar
+        // Draw Bar Container (Only for LED/Speaker)
         if (ui.editId != 2) {
-            int barW = 260; int barH = 15; int barX = (Screen::WIDTH - barW)/2; int barY = 160;
-            tft.drawRect(barX-1, barY-1, barW+2, barH+2, ST77XX_WHITE);
-            tft.fillRect(barX, barY, barW, barH, Colors::DARK);
-            int val = (ui.editId == 0) ? settings.ledBrightness : settings.speakerVol;
-            int fillW = (int)((float)barW * (val / 100.0f));
-            tft.fillRect(barX, barY, fillW, barH, Colors::GREEN);
+             int barW = 260; int barH = 15; int barX = (Screen::WIDTH - barW)/2; int barY = 160;
+             tft.drawRect(barX-1, barY-1, barW+2, barH+2, ST77XX_WHITE);
+             tft.fillRect(barX, barY, barW, barH, Colors::DARK); 
+             
+             // Draw Initial Green Bar
+             int fillW = (int)((float)barW * (currentVal / 100.0f));
+             if(fillW > 0) tft.fillRect(barX, barY, fillW, barH, Colors::GREEN);
         }
+        
+        // Force text update next block
+        ui.prevVal = -999; 
+        valChanged = true;
     }
 
-    // 3. Exit (Click or Key0)
-    // === FIX HERE: REMOVE DRAWING COMMANDS ===
+    // 3. Update Screen (Run only if changed)
+    if (valChanged) {
+        tft.setTextSize(5);
+        int16_t bx, by; uint16_t bw, bh;
+
+        // --- GRAPH RANGE (Erase Old -> Draw New) ---
+        if (ui.editId == 2) {
+            // A. ERASE OLD VALUE (Draw previous string in Background Color)
+            if (ui.prevVal != -999) {
+                char oldBuf[16];
+                if (ui.prevVal < 60) sprintf(oldBuf, "%dm", ui.prevVal);
+                else sprintf(oldBuf, "%dh", ui.prevVal/60);
+                
+                tft.setTextColor(Colors::BG, Colors::BG); // Eraser
+                tft.getTextBounds(oldBuf, 0, 0, &bx, &by, &bw, &bh);
+                tft.setCursor((Screen::WIDTH - bw)/2, 90);
+                tft.print(oldBuf);
+            }
+
+            // B. DRAW NEW VALUE
+            char newBuf[16];
+            if (currentVal < 60) sprintf(newBuf, "%dm", currentVal);
+            else sprintf(newBuf, "%dh", currentVal/60);
+            
+            tft.setTextColor(ST77XX_WHITE, Colors::BG);
+            tft.getTextBounds(newBuf, 0, 0, &bx, &by, &bw, &bh);
+            tft.setCursor((Screen::WIDTH - bw)/2, 90);
+            tft.print(newBuf);
+        } 
+        
+        // --- LED / SPEAKER (Overwrite) ---
+        else { 
+            tft.setTextColor(ST77XX_WHITE, Colors::BG);
+            char buf[16];
+            sprintf(buf, "%3d%%", currentVal); 
+            
+            tft.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
+            tft.setCursor((Screen::WIDTH - bw)/2, 90);
+            tft.print(buf);
+
+            // Update Bar
+            if (ui.prevVal != -999) { 
+                 int barW = 260; int barH = 15; int barX = (Screen::WIDTH - barW)/2; int barY = 160;
+                 int oldW = (int)((float)barW * (ui.prevVal / 100.0f));
+                 int newW = (int)((float)barW * (currentVal / 100.0f));
+                 
+                 if (newW != oldW) {
+                     if (newW > oldW) tft.fillRect(barX + oldW, barY, newW - oldW, barH, Colors::GREEN);
+                     else tft.fillRect(barX + newW, barY, oldW - newW, barH, Colors::DARK);
+                 }
+            }
+        }
+        
+        ui.prevVal = currentVal;
+    }
+
+    // 4. Exit
     if (encPressed || k0Pressed) {
         setLedState(false); 
         ui.currentMode = MODE_SETTINGS;
         ui.settingsIndex = ui.editId; 
-        
-        // REMOVED: tft.fillScreen and drawGenericList
-        // The loop will call runSettingsMenu() next, which will handle the drawing.
     }
 }
 
