@@ -5,18 +5,29 @@ void ClockMode::enter() {
     ui.currentMode = MODE_CLOCK;
     initClockStaticUI();
     prevTimeStr = "";
-    updateEnvSensors(true);
+    // Force an update immediately so we don't show empty data
+    updateEnvSensors(true); 
     drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
     drawEnvDynamic();
 }
 
 void ClockMode::loop() {
+    // OPTIMIZATION: Check for exit condition FIRST.
+    // If the button was pressed, skip all sensor reading and clock rendering.
+    // This removes the ~300ms latency caused by I2C communication.
+    if (Input.backPressed) {
+        State.switchMode(new MenuMode());
+        return; // Stop processing this loop immediately
+    }
+
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
         int sec = timeinfo.tm_sec;
         if (sec != prevSecond) {
             prevSecond = sec;
             drawClockTime(getTimeStr('H'), getTimeStr('M'), getTimeStr('S'));
+            
+            // Only read sensors if we are NOT exiting
             if (sec % 5 == 0) {
                 updateEnvSensors(true);
                 drawEnvDynamic();
@@ -25,8 +36,6 @@ void ClockMode::loop() {
             }
         }
     }
-    if (Input.backPressed)
-        State.switchMode(new MenuMode());
 }
 
 // ================= MENU MODE =================
