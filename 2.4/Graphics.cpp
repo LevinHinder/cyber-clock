@@ -100,10 +100,10 @@ void drawHistoryGraph() {
         int idx = (env.head + i) % EnvData::HIST_LEN;
         int x = i;
         // Simple scaling logic kept same
-        int yT = map(constrain(env.hTemp[idx] / 10, 0, 50), 0, 50, 88, 2);
+        int yT = map(constrain(env.hTemp[idx] / 10, 10, 40), 10, 40, 88, 2);
         int yH = map(constrain(env.hHum[idx], 0, 100), 0, 100, 88, 2);
         int yV = map(constrain(env.hTVOC[idx], 0, 1500), 0, 1500, 88, 2);
-        int yC = map(constrain(env.hCO2[idx], 0, 2000), 0, 2000, 88, 2);
+        int yC = map(constrain(env.hCO2[idx], 400, 2000), 400, 2000, 88, 2);
 
         if (i > 0) {
             graphCanvas.drawLine(pX, pY_T, x, yT, Colors::TEMP);
